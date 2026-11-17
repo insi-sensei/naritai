@@ -1674,3 +1674,20 @@ textarea.text:focus { outline: none; border-color: var(--accent); }
 .road-title { font-size: 15px; word-break: break-word; }
 .road-step.done .road-title { color: var(--sub); }
 .tabs .tab span { font-size: 11px; white-space: nowrap; }
+
+/* ===== 難易度・過ぎた日（Claude が足した分）===== */
+.tag.level-tag { background: transparent; border: none; padding: 0 2px; letter-spacing: -1px; color: #d6a21e; font-size: 12px; }
+.level-seg .seg-btn { font-size: 13px; padding-left: 6px; padding-right: 6px; }
+.date-input { width: auto; min-height: 36px; padding: 4px 10px; font-size: 14px; }
+.owner-task { flex-direction: column; align-items: stretch; gap: 6px; }
+.owner-task-top { display: flex; align-items: center; gap: 10px; }
+.owner-task-top .title { flex: 1; }
+.owner-task-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-left: 38px; }
+.level-pick { display: inline-flex; border: 1.5px solid var(--line); border-radius: 999px; overflow: hidden; }
+.level-btn { border: none; background: transparent; padding: 4px 8px; min-height: 30px; font-size: 12px; color: var(--sub); letter-spacing: -1px; cursor: pointer; }
+.level-btn.active { background: #fff3cf; color: #b8860b; font-weight: 700; }
+.tag.late-tag { background: #ffe7d6; color: #a2501f; }
+.weight-row { padding: 6px 0; }
+.weight-row .stepper { gap: 10px; }
+.small-val { font-size: 18px; min-width: 1.5em; text-align: center; }
+.level-seg .seg-btn { font-size: 12px; white-space: nowrap; letter-spacing: -0.5px; }

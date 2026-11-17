@@ -87,15 +87,25 @@ function requestsCard() {
 
 function tasksCard(date) {
   const tasks = Logic.tasksOn(state, inbox, date);
+  const st = Logic.stats(tasks);
   return h("section", { class: "card" },
-    h("strong", {}, `${Logic.dateLabel(date)} のタスク`),
-    tasks.length ? h("div", { class: "task-list" }, tasks.map((t) => h("div", { class: `task${t.done ? " done" : ""}` },
-      h("span", { class: "check", "aria-hidden": "true" }),
-      h("span", { class: "title" }, t.title),
-      t.from === "owner" ? h("span", { class: "tag" }, "にいにから") : t.from === "routine" ? h("span", { class: "tag" }, "いつもの") : null,
-      t.area ? areaTag(state, t.area) : null,
-      h("span", { class: "pt" }, t.done ? time(t.doneAt) : ""),
-      t.from === "owner" && !t.done ? h("button", { class: "btn small ghost", onclick: () => send("/api/owner/delete", { type: "task", id: t.id }, "取り消しました") }, "取消") : null))) : h("p", { class: "empty" }, "タスクはありません"));
+    h("div", { class: "row-between" }, h("strong", {}, `${Logic.dateLabel(date)} のタスク`), st.total ? h("span", { class: "sub" }, `${st.done}/${st.total}  +${fmt(Logic.taskPt(st))}pt`) : null),
+    tasks.length ? h("p", { class: "sub" }, "★を押すと、むずかしさを直せます（直したものが優先）") : null,
+    tasks.length ? h("div", { class: "task-list" }, tasks.map((t) => h("div", { class: `task owner-task${t.done ? " done" : ""}`, "data-id": t.id },
+      h("div", { class: "owner-task-top" },
+        h("span", { class: "check", "aria-hidden": "true" }),
+        h("span", { class: "title" }, t.title),
+        h("span", { class: "pt" }, t.done ? time(t.doneAt) : `+${Logic.perTaskPt(st, t.w)}pt`)),
+      h("div", { class: "owner-task-tags" },
+        h("div", { class: "level-pick", role: "group", "aria-label": "むずかしさ" }, Logic.RULES.LEVELS.map((l) => h("button", {
+          class: `level-btn${t.level === l.key ? " active" : ""}`, "data-level": l.key, title: l.label,
+          onclick: () => { if (t.level !== l.key) send("/api/owner/level", { id: t.id, level: l.key }, `「${t.title}」を${l.label}にしました`); },
+        }, l.stars))),
+        t.fixedBy ? h("span", { class: "tag" }, "にいにが直した") : null,
+        Logic.isLate(t) ? h("span", { class: "tag late-tag" }, `あとから（${Logic.short(t.added)}に追加）`) : null,
+        t.from === "owner" ? h("span", { class: "tag" }, "にいにから") : t.from === "routine" ? h("span", { class: "tag" }, "いつもの") : null,
+        t.area ? areaTag(state, t.area) : null,
+        t.from === "owner" && !t.done ? h("button", { class: "btn small ghost", onclick: () => send("/api/owner/delete", { type: "task", id: t.id }, "取り消しました") }, "取消") : null)))) : h("p", { class: "empty" }, "タスクはありません"));
 }
 
 function commentForm(date) {
@@ -128,18 +138,25 @@ function taskForm(date) {
   }, l)));
   drawSeg();
   let area = "";
+  let level = "normal";
+  const levelSeg = h("div", { class: "seg level-seg" });
+  const drawLevel = () => levelSeg.replaceChildren(...Logic.RULES.LEVELS.map((l) => h("button", {
+    class: `seg-btn${level === l.key ? " active" : ""}`, "data-level": l.key, onclick: () => { level = l.key; drawLevel(); },
+  }, `${l.stars} ${l.label}`)));
+  drawLevel();
   const picker = areaPicker(state, area, (v) => { area = v; });
   const goals = ["week", "month"].flatMap((k) => inbox.tasks.filter((t) => t.kind === k && t.period === Logic.periodOf(k, day)));
   return h("section", { class: "card" },
     h("strong", {}, `＋ ${who()}にタスク・目標を送る`),
     input, seg,
+    h("p", { class: "sub" }, "むずかしさ（この日のタスクのとき）"), levelSeg,
     state.areas.length ? h("div", {}, h("p", { class: "sub" }, "分野（えらばなくてもOK）"), picker.el) : null,
     h("button", {
       class: "btn", id: "o-send-task",
       onclick: () => {
         const title = input.value.trim();
         if (!title) { toast("タスクを入れてください"); return; }
-        const body = { ...(target === "task" ? { kind: "task", date, title } : { kind: target, period: Logic.periodOf(target, day), title }), ...(area ? { area } : {}) };
+        const body = { ...(target === "task" ? { kind: "task", date, title } : { kind: target, period: Logic.periodOf(target, day), title }), ...(area ? { area } : {}), ...(target === "task" && level !== "normal" ? { level } : {}) };
         send("/api/owner/task", body, "送りました");
       },
     }, "送る"),
@@ -202,6 +219,32 @@ function chartCard() {
     h("p", { class: "sub" }, `これまでに貯めた ${fmt(sm.earned)}pt / 交換した ${fmt(sm.exchanged)}pt / 申し込み中 ${fmt(sm.pending)}pt`));
 }
 
+// 難易度の重み。1日の上限1,500ptを、重みの割合で配る。
+function weightsCard() {
+  const w = { ...inbox.weights };
+  const L = Logic.RULES.LEVELS;
+  const example = h("p", { class: "sub", id: "o-weight-example" });
+  const drawExample = () => {
+    // 例：かんたん・ふつう・むずかしいを1個ずつ入れた日
+    const tasks = L.map((l) => ({ done: true, w: w[l.key], wn: w.normal }));
+    const st = Logic.stats(tasks);
+    example.textContent = `例：1個ずつの日 → ${L.map((l) => `${l.label} ${fmt(Logic.perTaskPt(st, w[l.key]))}pt`).join(" / ")}（合計 ${fmt(Logic.taskPt(st))}pt）`;
+  };
+  const rows = L.map((l) => {
+    const val = h("b", { class: "step-val small-val", id: `o-w-${l.key}` }, String(w[l.key]));
+    const change = (d) => { w[l.key] = Math.min(Logic.RULES.MAX_WEIGHT, Math.max(1, w[l.key] + d)); val.textContent = String(w[l.key]); drawExample(); };
+    return h("div", { class: "row-between weight-row" }, h("span", {}, `${l.stars} ${l.label}`),
+      h("div", { class: "stepper" }, h("button", { class: "step-btn small", "aria-label": `${l.label}をへらす`, onclick: () => change(-1) }, "−"), val,
+        h("button", { class: "step-btn small", "aria-label": `${l.label}をふやす`, onclick: () => change(1) }, "＋")));
+  });
+  drawExample();
+  return h("section", { class: "card" },
+    h("strong", {}, "むずかしさとポイント"),
+    h("p", { class: "sub" }, `1日の上限 ${fmt(Logic.RULES.DAY_TASK_PT)}pt はそのまま。重みが大きいタスクほど多く配ります（1〜${Logic.RULES.MAX_WEIGHT}）`),
+    rows, example,
+    h("button", { class: "btn", id: "o-save-weights", onclick: () => send("/api/owner/weights", w, "重みを保存しました") }, "保存"));
+}
+
 function settingsCard() {
   const input = h("input", { class: "text", id: "o-student", maxlength: 12, value: profile.student, "aria-label": "生徒の名前" });
   return h("details", { class: "card" }, h("summary", {}, "設定"),
@@ -228,6 +271,7 @@ function render() {
     taskForm(selected),
     cal.el,
     selfCard(),
+    weightsCard(),
     goalsCard(),
     chartCard(),
     settingsCard()));

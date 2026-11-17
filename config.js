@@ -53,6 +53,17 @@ const RULES = {
     { key: "1m", label: "1か月後", months: 1 }, { key: "2m", label: "2か月後", months: 2 },
     { key: "3m", label: "3か月後", months: 3 }, { key: "6m", label: "半年後", months: 6 },
   ],
+  // 難易度。1日の上限（DAY_TASK_PT）はそのままで、むずかしいタスクほど多く配る（重みづけ）。
+  // 重みは、にいにの画面の設定で変えられる（ここは最初の値）。
+  LEVELS: [
+    { key: "easy", label: "かんたん", stars: "★" },
+    { key: "normal", label: "ふつう", stars: "★★" },
+    { key: "hard", label: "むずかしい", stars: "★★★" },
+  ],
+  DEFAULT_WEIGHTS: { easy: 1, normal: 2, hard: 3 },
+  MAX_WEIGHT: 5,
+  // 過ぎた日のタスクを足したり、完了にしたりできるのは何日前までか。
+  BACK_DAYS: 7,
   // 保存の上限（スマホの容量を食いすぎないように）。
   MAX_TITLE: 60,
   MAX_COMMENT: 300,

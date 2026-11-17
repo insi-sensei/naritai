@@ -108,9 +108,11 @@ const todayTasks = () => Logic.tasksOn(state, inbox, day);
 
 // ---- タスクの操作 ----
 function toggleTask(t, rowEl) {
-  const wasComplete = Logic.isComplete(Logic.stats(todayTasks()));
-  const before = Logic.stats(todayTasks());
-  const ptBefore = Logic.taskPt(before);
+  // 過ぎた日は7日前まで。それより前はさわれない。
+  if (!Logic.canEditDay(t.date, day)) { toast("この日はもう変えられないよ"); return; }
+  const listOf = () => Logic.tasksOn(state, inbox, t.date);
+  const before = Logic.stats(listOf());
+  const wasComplete = Logic.isComplete(before);
   if (t.from === "owner") {
     const ownerDone = { ...state.ownerDone };
     if (ownerDone[t.id]) delete ownerDone[t.id]; else ownerDone[t.id] = Date.now();
@@ -119,17 +121,15 @@ function toggleTask(t, rowEl) {
     state = { ...state, tasks: state.tasks.map((x) => (x.id === t.id ? { ...x, done: !x.done, doneAt: x.done ? 0 : Date.now() } : x)) };
   }
   save();
-  const after = Logic.stats(todayTasks());
-  const gained = Logic.taskPt(after) - ptBefore;
+  const after = Logic.stats(listOf());
+  const gained = Logic.taskPt(after) - Logic.taskPt(before);
   render();
-  const mascotEl = document.querySelector(".mascot svg");
   if (gained > 0) {
-    animate(mascotEl, "hop");
+    animate(document.querySelector(".mascot svg"), "hop");
     coinFly(rowEl, `+${gained}pt`);
   }
-  if (!wasComplete && Logic.isComplete(after)) {
-    setTimeout(() => complete(), 350);
-  }
+  // 今日コンプリートのお祝いとスクラッチは、その日のうちだけ。
+  if (t.date === day && !wasComplete && Logic.isComplete(after)) setTimeout(() => complete(), 350);
 }
 
 function complete() {
@@ -190,21 +190,24 @@ function scratchCard(amount) {
   return h("div", {}, box, h("button", { class: "btn small ghost", id: "scratch-all", onclick: reveal }, "いっきに全部けずる"));
 }
 
-function addTask(title, target, routine, area = "") {
+function addTask(title, target, routine, area = "", level = "normal", date = day) {
   const tagArea = area && state.areas.some((a) => a.id === area) ? { area } : {};
+  const tagLevel = level && level !== "normal" && R().LEVELS.some((l) => l.key === level) ? { level } : {};
   title = title.trim().slice(0, R().MAX_TITLE);
   if (!title) return false;
   if (target === "today") {
-    if (todayTasks().length >= R().MAX_TASKS_PER_DAY) { toast("今日はもういっぱい！"); return false; }
+    if (!Logic.canEditDay(date, day)) { toast(`足せるのは${R().BACK_DAYS}日前までだよ`); return false; }
+    if (Logic.tasksOn(state, inbox, date).length >= R().MAX_TASKS_PER_DAY) { toast("この日はもういっぱい！"); return false; }
     const tasks = [...state.tasks];
     let routines = state.routines;
     let routineId;
-    if (routine) {
+    if (routine && date === day) {
       if (routines.length >= R().MAX_ROUTINES) { toast("いつものはこれ以上ふやせません"); return false; }
       routineId = Logic.newId();
-      routines = [...routines, { id: routineId, title, ...tagArea }];
+      routines = [...routines, { id: routineId, title, ...tagArea, ...tagLevel }];
     }
-    tasks.push({ id: Logic.newId(), date: day, title, done: false, doneAt: 0, ...(routineId ? { routine: routineId } : {}), ...tagArea });
+    // added（足した日）：あとから足したタスクか、にいにが見て分かるように。
+    tasks.push({ id: Logic.newId(), date, title, done: false, doneAt: 0, added: day, ...(routineId ? { routine: routineId } : {}), ...tagArea, ...tagLevel });
     state = { ...state, tasks, routines };
   } else {
     const kind = target;
@@ -237,26 +240,47 @@ function toggleGoal(g) {
 }
 
 // ---- ＋ボタン ----
-function openAdd(defaultTarget = "today") {
+function openAdd(defaultTarget = "today", presetDate = day) {
   let target = defaultTarget;
+  let date = presetDate;
+  let level = "normal";
   openSheet((close) => {
     const input = h("input", { class: "text", id: "add-input", type: "text", maxlength: R().MAX_TITLE, placeholder: "例：英単語20個", enterkeyhint: "done", "aria-label": "やること" });
     const routine = h("input", { type: "checkbox", id: "add-routine" });
     const routineRow = h("label", { class: "toggle-row" }, h("span", {}, "毎日の「いつもの」にする"), routine);
+    // 日付：今日・昨日・おととい・日付をえらぶ（7日前まで）
+    const dateBox = h("div", {});
+    const picker7 = h("input", { type: "date", class: "text date-input", id: "add-date", min: Logic.addDays(day, -R().BACK_DAYS), max: day, value: date, "aria-label": "日付をえらぶ" });
+    picker7.addEventListener("change", () => { if (picker7.value && Logic.canEditDay(picker7.value, day)) { date = picker7.value; drawDate(); } });
+    const drawDate = () => {
+      const quick = [[day, "今日"], [Logic.addDays(day, -1), "昨日"], [Logic.addDays(day, -2), "おととい"]];
+      dateBox.replaceChildren(
+        h("div", { class: "chips" }, quick.map(([d, l]) => h("button", { class: `chip${date === d ? " active" : ""}`, "data-date": d, onclick: () => { date = d; drawDate(); } }, l)), picker7),
+        date !== day ? h("p", { class: "sub" }, `${Logic.dateLabel(date)} に足すよ`) : null);
+      routineRow.hidden = target !== "today" || date !== day;
+    };
+    const levelSeg = h("div", { class: "seg level-seg" });
+    const drawLevel = () => levelSeg.replaceChildren(...R().LEVELS.map((l) => h("button", {
+      class: `seg-btn${level === l.key ? " active" : ""}`, "data-level": l.key, onclick: () => { level = l.key; drawLevel(); },
+    }, `${l.stars} ${l.label}`)));
+    drawLevel();
+    const taskOnly = h("div", {}, h("p", { class: "sub" }, "いつ？"), dateBox, h("p", { class: "sub" }, "むずかしさ（むずかしいほど pt が多い）"), levelSeg);
     const seg = h("div", { class: "seg", role: "tablist" });
     const drawSeg = () => {
-      seg.replaceChildren(...[["today", "今日"], ["week", "今週の目標"], ["month", "今月の目標"]].map(([v, label]) => h("button", {
-        class: `seg-btn${target === v ? " active" : ""}`, "data-target": v, onclick: () => { target = v; drawSeg(); routineRow.hidden = target !== "today"; },
+      seg.replaceChildren(...[["today", "タスク"], ["week", "今週の目標"], ["month", "今月の目標"]].map(([v, label]) => h("button", {
+        class: `seg-btn${target === v ? " active" : ""}`, "data-target": v, onclick: () => { target = v; drawSeg(); taskOnly.hidden = target !== "today"; drawDate(); },
       }, label)));
     };
     drawSeg();
+    drawDate();
+    taskOnly.hidden = target !== "today";
     let area = "";
     const picker = areaPicker(state, area, (v) => { area = v; });
     const done = (title, chipArea) => {
-      if (addTask(title, target, target === "today" && routine.checked, chipArea === undefined ? area : chipArea)) {
+      if (addTask(title, target, target === "today" && routine.checked, chipArea === undefined ? area : chipArea, level, date)) {
         close();
         render();
-        toast(target === "today" ? "追加したよ" : "目標を追加したよ");
+        toast(target !== "today" ? "目標を追加したよ" : date === day ? "追加したよ" : `${Logic.dateLabel(date)} に追加したよ`);
       }
     };
     input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) done(input.value); });
@@ -267,6 +291,7 @@ function openAdd(defaultTarget = "today") {
       favs.length ? h("div", {}, h("p", { class: "sub" }, "よく使う（タップで追加）"), h("div", { class: "chips" }, favs.map((f) => h("button", { class: "chip", onclick: () => done(f, area || Logic.lastArea(state, f)) }, f)))) : null,
       h("p", { class: "sub" }, "入れる先"),
       seg,
+      taskOnly,
       state.areas.length ? h("div", {}, h("p", { class: "sub" }, "なりたい自分の分野（えらばなくてもOK）"), picker.el) : null,
       routineRow,
       h("button", { class: "btn primary", id: "add-submit", onclick: () => done(input.value) }, "追加する"),
@@ -301,14 +326,16 @@ function swipeRow(row, onDelete) {
   return wrap;
 }
 
-function taskRow(t, perPt) {
+function taskRow(t, s) {
+  const lv = Logic.levelInfo(t.level);
   const row = h("button", { class: `task${t.done ? " done" : ""}`, "data-id": t.id, "aria-pressed": t.done ? "true" : "false" },
     h("span", { class: "check", "aria-hidden": "true" }),
     h("span", { class: "title" }, t.title),
+    h("span", { class: `tag level-tag level-${lv.key}`, title: lv.label, "aria-label": `むずかしさ ${lv.label}${t.fixedBy ? "（" + coach() + "が決めた）" : ""}` }, lv.stars),
     t.from === "routine" ? h("span", { class: "tag" }, "いつもの") : null,
     t.from === "owner" ? h("span", { class: "tag" }, `${coach()}から`) : null,
     t.area ? areaTag(state, t.area) : null,
-    h("span", { class: "pt" }, t.done ? "" : `+${perPt}pt`));
+    h("span", { class: "pt" }, t.done ? "" : `+${Logic.perTaskPt(s, t.w)}pt`));
   row.addEventListener("click", () => toggleTask(t, row));
   // にいにからのタスクは消せない（にいにの画面で消す）。
   return t.from === "owner" ? h("div", { class: "task-wrap" }, row) : swipeRow(row, () => removeItem("task", t.id));
@@ -337,7 +364,6 @@ function renderHome() {
   const sm = sum();
   const stg = Logic.stage(sm.earned);
   const tasks = todayTasks();
-  const per = Logic.perTaskPt(s);
   const latest = [...inbox.comments].sort((a, b) => b.at - a.at)[0];
   const left = Logic.leftovers(state, day);
   const els = [
@@ -376,7 +402,7 @@ function renderHome() {
     els.push(h("button", { class: "banner", id: "scratch-banner", onclick: () => complete() }, h("span", {}, "🎫"), h("span", {}, "ボーナススクラッチが削れるよ！")));
   }
   els.push(tasks.length
-    ? h("div", { class: "task-list", id: "tasks" }, tasks.map((t) => taskRow(t, per)))
+    ? h("div", { class: "task-list", id: "tasks" }, tasks.map((t) => taskRow(t, s)))
     : h("p", { class: "empty" }, "右下の ＋ から、今日やることを入れよう"));
   if (tasks.length && s.total < R().MIN_TASKS) els.push(h("p", { class: "empty" }, `${R().MIN_TASKS}個以上入れて全部終えると、ボーナススクラッチ！`));
   els.push(fab("today"));
@@ -432,7 +458,7 @@ function renderCalendar() {
     h("div", { class: "card cal-legend" },
       h("div", {}, `🌸 全部できた　${R().PARTIAL_STICKER} 少しできた`),
       h("div", { class: "sub" }, `今月のシール ${cal.stickers}枚 ／ がんばった日 累計 ${t.activeDays}日 ✨`)),
-    dayDetail(state, inbox, calSelected, coach()),
+    Logic.canEditDay(calSelected, day) ? editableDay(calSelected) : dayDetail(state, inbox, calSelected, coach()),
   ];
 }
 
@@ -571,6 +597,18 @@ function openRoadmap(keepStart) {
       } }, "保存"),
     ];
   });
+}
+
+// シール帳で選んだ日（7日前まで）。タスクを押すと完了、＋でこの日に足せる。
+function editableDay(date) {
+  const tasks = Logic.tasksOn(state, inbox, date);
+  const s = Logic.stats(tasks);
+  const comments = inbox.comments.filter((c) => c.date === date);
+  return h("div", { class: "day-detail card", id: "day-edit" },
+    h("div", { class: "row-between" }, h("strong", {}, Logic.dateLabel(date)), h("span", {}, s.total ? `${s.done}/${s.total}  ${Math.round(s.rate * 100)}%  +${fmt(Logic.taskPt(s))}pt` : "")),
+    tasks.length ? h("div", { class: "task-list" }, tasks.map((t) => taskRow(t, s))) : h("p", { class: "empty" }, "この日のタスクはまだないよ"),
+    h("button", { class: "btn", id: "add-to-day", onclick: () => openAdd("today", date) }, date === day ? "＋ 今日に足す" : "＋ この日に足す"),
+    comments.map((c) => commentCard(c, coach(), false)));
 }
 
 function renderPoints() {

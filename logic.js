@@ -65,7 +65,7 @@ const Logic = (() => {
   const emptyState = () => ({
     v: 1, tasks: [], ownerDone: {}, goals: [], routines: [], logins: [], scratches: {}, requests: [], areas: [], reflections: [], roadmap: null, updatedAt: 0,
   });
-  const emptyInbox = () => ({ v: 1, comments: [], tasks: [], decisions: {}, updatedAt: 0 });
+  const emptyInbox = () => ({ v: 1, comments: [], tasks: [], decisions: {}, levels: {}, weights: { ...R.DEFAULT_WEIGHTS }, updatedAt: 0 });
 
   function newId(now = Date.now()) {
     return `${now.toString(36)}${Math.random().toString(36).slice(2, 8)}`.slice(0, 32);
@@ -78,6 +78,9 @@ const Logic = (() => {
   const str = (x, max) => (typeof x === "string" ? x.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, max) : "");
   const num = (x) => (Number.isFinite(x) && x >= 0 ? Math.floor(x) : 0);
   const list = (x, max) => (Array.isArray(x) ? x.slice(-max) : []);
+  const LEVEL_KEYS = R.LEVELS.map((l) => l.key);
+  // 難易度（ついていれば。ふつうは書かない）。
+  const levelOf = (x) => (LEVEL_KEYS.includes(x.level) && x.level !== "normal" ? { level: x.level } : {});
   const score = (x, fallback) => (Number.isInteger(x) && x >= 0 && x <= R.MAX_SCORE ? x : fallback);
   // 分野のラベル（ついていれば）。
   const areaOf = (x) => (typeof x.area === "string" && ID.test(x.area) ? { area: x.area } : {});
@@ -104,6 +107,8 @@ const Logic = (() => {
         id: t.id, date: t.date, title: str(t.title, R.MAX_TITLE), done: t.done === true, doneAt: num(t.doneAt),
         ...(typeof t.routine === "string" && ID.test(t.routine) ? { routine: t.routine } : {}),
         ...areaOf(t),
+        ...levelOf(t),
+        ...(typeof t.added === "string" && DATE.test(t.added) ? { added: t.added } : {}),
       }));
     s.ownerDone = cleanMap(x.ownerDone, (k) => ID.test(k), (v) => (num(v) > 0 ? num(v) : null));
     s.goals = list(x.goals, R.MAX_GOALS).filter((g) => isObj(g) && ID.test(g.id) && (g.kind === "week" || g.kind === "month")
@@ -147,8 +152,11 @@ const Logic = (() => {
       .map((c) => ({ id: c.id, date: c.date, text: str(c.text, R.MAX_COMMENT), stamp: STAMPS.includes(c.stamp) ? c.stamp : "", at: num(c.at) }));
     b.tasks = list(x.tasks, R.MAX_OWNER_TASKS).filter((t) => isObj(t) && ID.test(t.id) && str(t.title, R.MAX_TITLE) && (
       (t.kind === "task" && DATE.test(t.date)) || (t.kind === "week" && DATE.test(t.period)) || (t.kind === "month" && MONTH.test(t.period))))
-      .map((t) => ({ id: t.id, kind: t.kind, title: str(t.title, R.MAX_TITLE), at: num(t.at), ...areaOf(t), ...(t.kind === "task" ? { date: t.date } : { period: t.period }) }));
+      .map((t) => ({ id: t.id, kind: t.kind, title: str(t.title, R.MAX_TITLE), at: num(t.at), ...areaOf(t), ...levelOf(t), ...(t.kind === "task" ? { date: t.date } : { period: t.period }) }));
     b.decisions = cleanMap(x.decisions, (k) => ID.test(k), (v) => (isObj(v) && DATE.test(v.date) ? { date: v.date, at: num(v.at) } : null));
+    b.levels = cleanMap(x.levels, (k) => ID.test(k), (v) => (LEVEL_KEYS.includes(v) ? v : null));
+    b.weights = { ...R.DEFAULT_WEIGHTS };
+    if (isObj(x.weights)) for (const k of LEVEL_KEYS) if (Number.isInteger(x.weights[k]) && x.weights[k] >= 1 && x.weights[k] <= R.MAX_WEIGHT) b.weights[k] = x.weights[k];
     b.updatedAt = num(x.updatedAt);
     return b;
   }
@@ -157,23 +165,40 @@ const Logic = (() => {
   // 生徒が入れたタスクと、にいにから届いたタスクを合わせた一覧。
   function tasksOn(state, inbox, date) {
     const own = state.tasks.filter((t) => t.date === date).map((t) => ({ ...t, from: t.routine ? "routine" : "self" }));
+    const w = inbox.weights || R.DEFAULT_WEIGHTS;
+    const withLevel = (t) => {
+      const level = (inbox.levels && inbox.levels[t.id]) || t.level || "normal";
+      return { ...t, level, w: w[level], wn: w.normal, fixedBy: inbox.levels && inbox.levels[t.id] ? "owner" : "" };
+    };
     const fromOwner = inbox.tasks.filter((t) => t.kind === "task" && t.date === date).map((t) => ({
-      id: t.id, date, title: t.title, from: "owner", ...areaOf(t), done: Boolean(state.ownerDone[t.id]), doneAt: state.ownerDone[t.id] || 0,
+      id: t.id, date, title: t.title, from: "owner", ...areaOf(t), ...levelOf(t), done: Boolean(state.ownerDone[t.id]), doneAt: state.ownerDone[t.id] || 0,
     }));
-    return [...fromOwner, ...own];
+    return [...fromOwner, ...own].map(withLevel);
   }
 
+  // 数と割合。タスクには難易度の重み（w）がつく。割合は重みで数える（目標は重み1）。
   function stats(tasks) {
     const total = tasks.length;
     const done = tasks.filter((t) => t.done).length;
-    return { total, done, rate: total ? done / total : 0 };
+    const totalW = tasks.reduce((a, t) => a + (t.w || 1), 0);
+    const doneW = tasks.filter((t) => t.done).reduce((a, t) => a + (t.w || 1), 0);
+    const normalW = tasks.length && tasks[0].wn ? tasks[0].wn : 1;
+    return { total, done, totalW, doneW, normalW, rate: totalW ? doneW / totalW : 0 };
   }
 
   const round10 = (x) => Math.round(x / 10) * 10;
-  const taskPt = (s) => round10(R.DAY_TASK_PT * s.done / Math.max(s.total, R.MIN_TASKS));
+  // 1日の上限は DAY_TASK_PT。タスクが少ない日は「ふつう MIN_TASKS 個分」で割る（1個だけで満額にならないように）。
+  const denom = (s) => Math.max(s.totalW === undefined ? s.total : s.totalW, R.MIN_TASKS * (s.normalW || 1));
+  const taskPt = (s) => round10(R.DAY_TASK_PT * (s.doneW === undefined ? s.done : s.doneW) / denom(s));
   const isComplete = (s) => s.total >= R.MIN_TASKS && s.done === s.total;
   // その日のタスクを1個終えると増えるポイント（画面の「+〇pt」の表示用）。
-  const perTaskPt = (s) => round10(R.DAY_TASK_PT / Math.max(s.total, R.MIN_TASKS));
+  const perTaskPt = (s, w = 1) => round10(R.DAY_TASK_PT * w / denom(s));
+
+  // 過ぎた日のタスクをさわれるか（今日から BACK_DAYS 日前まで）。
+  const canEditDay = (date, todayStr) => date <= todayStr && daysBetween(date, todayStr) <= R.BACK_DAYS;
+  // あとから足したタスクか（足した日が、タスクの日より後）。
+  const isLate = (t) => Boolean(t.added && t.added > t.date);
+  const levelInfo = (key) => R.LEVELS.find((l) => l.key === key) || R.LEVELS[1];
 
   function goalsFor(state, inbox, kind, period) {
     const own = state.goals.filter((g) => g.kind === kind && g.period === period).map((g) => ({ ...g, from: "self" }));
@@ -504,7 +529,7 @@ const Logic = (() => {
   return {
     RULES: R, today, addDays, daysBetween, weekKey, monthKey, periodOf, periodLabel, monthDays, addMonths, dateLabel, short, daysLeft, weekday,
     emptyState, emptyInbox, newId, cleanState, cleanInbox, STAMPS,
-    tasksOn, stats, taskPt, perTaskPt, isComplete, goalsFor, goalPt, ledger, summary, yen, series,
+    tasksOn, stats, taskPt, perTaskPt, isComplete, canEditDay, isLate, levelInfo, goalsFor, goalPt, ledger, summary, yen, series,
     stage, coins, streak, totals, sticker, startDay, leftovers, carryOver, favorites, drawScratch, canScratch, canExchange, unseenComments,
     areaColor, areaName, setAreas, reflectionOf, canReflect, reflect, radar, areaActivity, lastArea,
     roadmapSteps, nextStep, roadmapOver, setRoadmap, toggleStep,

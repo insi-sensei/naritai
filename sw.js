@@ -1,5 +1,5 @@
 // スマホの裏側で動く係。電波がなくても開けるように、アプリのファイルを保存しておく。
-const CACHE = "naritai-v3";
+const CACHE = "naritai-v4";
 const FILES = [
   "./", "./index.html", "./owner.html", "./style.css", "./config.js", "./logic.js", "./mascot.js", "./ui.js", "./app.js", "./owner.js",
   "./manifest.webmanifest", "./icons/icon-192.png", "./icons/icon-512.png",
