@@ -38,6 +38,21 @@ const RULES = {
   // シール帳のシール（段階が上がると増える）。
   STICKERS: ["🌸", "🍓", "🌷", "🎀", "👑"],
   PARTIAL_STICKER: "🫧",
+  // なりたい自分（振り返りシート）。分野は生徒が自分で名前を決める。週に1回、0〜10点を付ける。
+  REFLECT_PT: 500,
+  MIN_AREAS: 3,
+  MAX_AREAS: 8,
+  MAX_SCORE: 10,
+  DEFAULT_TARGET: 8,
+  AREA_COLORS: ["#e0668f", "#8e6fd1", "#3fa58a", "#e08a3c", "#4f93d1", "#c46fc0", "#b39020", "#62a84f"],
+  MAX_AREA_NAME: 12,
+  MAX_REFLECTIONS: 600,
+  // 道のりの節目（作った日から）。
+  ROADMAP_STEPS: [
+    { key: "1w", label: "1週間後", days: 7 }, { key: "2w", label: "2週間後", days: 14 },
+    { key: "1m", label: "1か月後", months: 1 }, { key: "2m", label: "2か月後", months: 2 },
+    { key: "3m", label: "3か月後", months: 3 }, { key: "6m", label: "半年後", months: 6 },
+  ],
   // 保存の上限（スマホの容量を食いすぎないように）。
   MAX_TITLE: 60,
   MAX_COMMENT: 300,

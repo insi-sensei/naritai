@@ -63,7 +63,7 @@ const Logic = (() => {
 
   // ---- 空のデータ ----
   const emptyState = () => ({
-    v: 1, tasks: [], ownerDone: {}, goals: [], routines: [], logins: [], scratches: {}, requests: [], updatedAt: 0,
+    v: 1, tasks: [], ownerDone: {}, goals: [], routines: [], logins: [], scratches: {}, requests: [], areas: [], reflections: [], roadmap: null, updatedAt: 0,
   });
   const emptyInbox = () => ({ v: 1, comments: [], tasks: [], decisions: {}, updatedAt: 0 });
 
@@ -78,6 +78,9 @@ const Logic = (() => {
   const str = (x, max) => (typeof x === "string" ? x.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, max) : "");
   const num = (x) => (Number.isFinite(x) && x >= 0 ? Math.floor(x) : 0);
   const list = (x, max) => (Array.isArray(x) ? x.slice(-max) : []);
+  const score = (x, fallback) => (Number.isInteger(x) && x >= 0 && x <= R.MAX_SCORE ? x : fallback);
+  // 分野のラベル（ついていれば）。
+  const areaOf = (x) => (typeof x.area === "string" && ID.test(x.area) ? { area: x.area } : {});
 
   function cleanMap(x, ok, value) {
     const out = {};
@@ -100,13 +103,31 @@ const Logic = (() => {
       .map((t) => ({
         id: t.id, date: t.date, title: str(t.title, R.MAX_TITLE), done: t.done === true, doneAt: num(t.doneAt),
         ...(typeof t.routine === "string" && ID.test(t.routine) ? { routine: t.routine } : {}),
+        ...areaOf(t),
       }));
     s.ownerDone = cleanMap(x.ownerDone, (k) => ID.test(k), (v) => (num(v) > 0 ? num(v) : null));
     s.goals = list(x.goals, R.MAX_GOALS).filter((g) => isObj(g) && ID.test(g.id) && (g.kind === "week" || g.kind === "month")
       && (g.kind === "week" ? DATE.test(g.period) : MONTH.test(g.period)) && str(g.title, R.MAX_TITLE))
-      .map((g) => ({ id: g.id, kind: g.kind, period: g.period, title: str(g.title, R.MAX_TITLE), done: g.done === true, doneAt: num(g.doneAt) }));
+      .map((g) => ({ id: g.id, kind: g.kind, period: g.period, title: str(g.title, R.MAX_TITLE), done: g.done === true, doneAt: num(g.doneAt), ...areaOf(g) }));
     s.routines = list(x.routines, R.MAX_ROUTINES).filter((r) => isObj(r) && ID.test(r.id) && str(r.title, R.MAX_TITLE))
-      .map((r) => ({ id: r.id, title: str(r.title, R.MAX_TITLE) }));
+      .map((r) => ({ id: r.id, title: str(r.title, R.MAX_TITLE), ...areaOf(r) }));
+    const areaIds = new Set();
+    s.areas = list(x.areas, R.MAX_AREAS).filter((a) => isObj(a) && ID.test(a.id) && str(a.name, R.MAX_AREA_NAME) && !areaIds.has(a.id) && areaIds.add(a.id))
+      .map((a) => ({ id: a.id, name: str(a.name, R.MAX_AREA_NAME), target: score(a.target, R.DEFAULT_TARGET) }));
+    const weeks = new Map();
+    for (const r of list(x.reflections, R.MAX_REFLECTIONS)) {
+      if (!isObj(r) || !DATE.test(r.week) || weekKey(r.week) !== r.week || !DATE.test(r.date) || weekKey(r.date) !== r.week) continue;
+      weeks.set(r.week, { week: r.week, date: r.date, at: num(r.at), scores: cleanMap(r.scores, (k) => areaIds.has(k), (v) => (Number.isInteger(v) && v >= 0 && v <= R.MAX_SCORE ? v : null)) });
+    }
+    s.reflections = [...weeks.values()].sort((a, b) => (a.week < b.week ? -1 : 1));
+    if (isObj(x.roadmap) && DATE.test(x.roadmap.start) && isObj(x.roadmap.steps)) {
+      const steps = {};
+      for (const st of R.ROADMAP_STEPS) {
+        const v = x.roadmap.steps[st.key];
+        if (isObj(v)) steps[st.key] = { title: str(v.title, R.MAX_TITLE), done: v.done === true, doneAt: num(v.doneAt) };
+      }
+      s.roadmap = { start: x.roadmap.start, steps };
+    }
     s.logins = [...new Set(list(x.logins, 5000).filter((d) => typeof d === "string" && DATE.test(d)))].sort();
     const amounts = new Set(R.SCRATCH.map((p) => p.pt));
     s.scratches = cleanMap(x.scratches, (k) => DATE.test(k), (v) => (amounts.has(v) ? v : null));
@@ -126,7 +147,7 @@ const Logic = (() => {
       .map((c) => ({ id: c.id, date: c.date, text: str(c.text, R.MAX_COMMENT), stamp: STAMPS.includes(c.stamp) ? c.stamp : "", at: num(c.at) }));
     b.tasks = list(x.tasks, R.MAX_OWNER_TASKS).filter((t) => isObj(t) && ID.test(t.id) && str(t.title, R.MAX_TITLE) && (
       (t.kind === "task" && DATE.test(t.date)) || (t.kind === "week" && DATE.test(t.period)) || (t.kind === "month" && MONTH.test(t.period))))
-      .map((t) => ({ id: t.id, kind: t.kind, title: str(t.title, R.MAX_TITLE), at: num(t.at), ...(t.kind === "task" ? { date: t.date } : { period: t.period }) }));
+      .map((t) => ({ id: t.id, kind: t.kind, title: str(t.title, R.MAX_TITLE), at: num(t.at), ...areaOf(t), ...(t.kind === "task" ? { date: t.date } : { period: t.period }) }));
     b.decisions = cleanMap(x.decisions, (k) => ID.test(k), (v) => (isObj(v) && DATE.test(v.date) ? { date: v.date, at: num(v.at) } : null));
     b.updatedAt = num(x.updatedAt);
     return b;
@@ -137,7 +158,7 @@ const Logic = (() => {
   function tasksOn(state, inbox, date) {
     const own = state.tasks.filter((t) => t.date === date).map((t) => ({ ...t, from: t.routine ? "routine" : "self" }));
     const fromOwner = inbox.tasks.filter((t) => t.kind === "task" && t.date === date).map((t) => ({
-      id: t.id, date, title: t.title, from: "owner", done: Boolean(state.ownerDone[t.id]), doneAt: state.ownerDone[t.id] || 0,
+      id: t.id, date, title: t.title, from: "owner", ...areaOf(t), done: Boolean(state.ownerDone[t.id]), doneAt: state.ownerDone[t.id] || 0,
     }));
     return [...fromOwner, ...own];
   }
@@ -157,7 +178,7 @@ const Logic = (() => {
   function goalsFor(state, inbox, kind, period) {
     const own = state.goals.filter((g) => g.kind === kind && g.period === period).map((g) => ({ ...g, from: "self" }));
     const fromOwner = inbox.tasks.filter((t) => t.kind === kind && t.period === period).map((t) => ({
-      id: t.id, kind, period, title: t.title, from: "owner", done: Boolean(state.ownerDone[t.id]), doneAt: state.ownerDone[t.id] || 0,
+      id: t.id, kind, period, title: t.title, from: "owner", ...areaOf(t), done: Boolean(state.ownerDone[t.id]), doneAt: state.ownerDone[t.id] || 0,
     }));
     return [...fromOwner, ...own];
   }
@@ -208,6 +229,9 @@ const Logic = (() => {
     for (const q of state.requests) {
       const d = inbox.decisions[q.id];
       if (d) rows.push({ date: d.date, amount: -q.amount, reason: "にいにと交換", kind: "exchange", order: 6 });
+    }
+    for (const r of state.reflections) {
+      if (r.date <= todayStr) rows.push({ date: r.date, amount: R.REFLECT_PT, reason: "今週の振り返り", kind: "reflect", order: 5 });
     }
     return rows.sort((a, b) => (a.date === b.date ? b.order - a.order : a.date < b.date ? 1 : -1));
   }
@@ -315,7 +339,7 @@ const Logic = (() => {
     }
     for (const r of s.routines) {
       if (!s.tasks.some((t) => t.date === todayStr && t.routine === r.id)) {
-        s.tasks.push({ id: newId(now), date: todayStr, title: r.title, done: false, doneAt: 0, routine: r.id });
+        s.tasks.push({ id: newId(now), date: todayStr, title: r.title, done: false, doneAt: 0, routine: r.id, ...areaOf(r) });
       }
     }
     return { state: s, bonus };
@@ -364,11 +388,126 @@ const Logic = (() => {
   // 新しいコメント（生徒がまだ見ていないもの）。
   const unseenComments = (inbox, seenAt) => inbox.comments.filter((c) => c.at > seenAt);
 
+  // ---- なりたい自分（振り返りシート）----
+  // 分野の色は並び順で決まる（保存しない）。
+  const areaColor = (state, areaId) => {
+    const i = state.areas.findIndex((a) => a.id === areaId);
+    return i < 0 ? "" : R.AREA_COLORS[i % R.AREA_COLORS.length];
+  };
+  const areaName = (state, areaId) => (state.areas.find((a) => a.id === areaId) || {}).name || "";
+
+  // 分野を決める（名前の一覧から）。前からある分野は、同じ並びのものの名前だけを変える（点数の記録を残すため）。
+  function setAreas(state, names, now = Date.now()) {
+    const clean = names.map((n) => str(n, R.MAX_AREA_NAME)).filter(Boolean).slice(0, R.MAX_AREAS);
+    if (clean.length < R.MIN_AREAS) return null;
+    const areas = clean.map((name, i) => (state.areas[i]
+      ? { ...state.areas[i], name }
+      : { id: newId(now + i), name, target: R.DEFAULT_TARGET }));
+    return { ...state, areas };
+  }
+
+  const reflectionOf = (state, week) => state.reflections.find((r) => r.week === week) || null;
+  const canReflect = (state, todayStr) => state.areas.length >= R.MIN_AREAS && !reflectionOf(state, weekKey(todayStr));
+
+  // 今週の点数を付ける（同じ週にもう一度付けると、上書きする。ポイントは週に1回だけ）。
+  function reflect(state, todayStr, scores, targets, now = Date.now()) {
+    const week = weekKey(todayStr);
+    const clean = {};
+    for (const a of state.areas) clean[a.id] = score(scores[a.id], 0);
+    const areas = state.areas.map((a) => ({ ...a, target: targets && a.id in targets ? score(targets[a.id], a.target) : a.target }));
+    const old = reflectionOf(state, week);
+    const reflections = [...state.reflections.filter((r) => r.week !== week), { week, date: old ? old.date : todayStr, at: now, scores: clean }]
+      .sort((a, b) => (a.week < b.week ? -1 : 1));
+    return { ...state, areas, reflections };
+  }
+
+  // レーダーチャートに描く値。なりたい点数・先週・今週（なければ一番新しい回）。
+  function radar(state, todayStr) {
+    const past = state.reflections.filter((r) => r.week <= weekKey(todayStr));
+    const latest = past[past.length - 1] || null;
+    const before = past[past.length - 2] || null;
+    const values = (r) => (r ? state.areas.map((a) => (a.id in r.scores ? r.scores[a.id] : 0)) : null);
+    return {
+      areas: state.areas.map((a, i) => ({ ...a, color: R.AREA_COLORS[i % R.AREA_COLORS.length] })),
+      target: state.areas.map((a) => a.target),
+      now: values(latest), nowWeek: latest ? latest.week : "",
+      prev: values(before), prevWeek: before ? before.week : "",
+    };
+  }
+
+  // 今週、分野ごとに終えたタスクと目標の数（シートと毎日のつながりを見せる）。
+  function areaActivity(state, inbox, todayStr) {
+    const week = weekKey(todayStr);
+    const count = Object.fromEntries(state.areas.map((a) => [a.id, 0]));
+    for (let i = 0; i < 7; i += 1) {
+      const d = addDays(week, i);
+      if (d > todayStr) break;
+      for (const t of tasksOn(state, inbox, d)) if (t.done && t.area in count) count[t.area] += 1;
+    }
+    for (const [kind, period] of [["week", week], ["month", monthKey(todayStr)]]) {
+      for (const g of goalsFor(state, inbox, kind, period)) if (g.done && g.area in count && weekKey(today(new Date(g.doneAt))) === week) count[g.area] += 1;
+    }
+    return count;
+  }
+
+  // ---- 道のり（1週間後〜半年後の節目）----
+  // 月の足し算は、同じ日がない月なら月末にする（1/31 の1か月後は 2/28）。
+  function addMonthsDate(date, n) {
+    const m = addMonths(monthKey(date), n);
+    const d = Math.min(Number(date.slice(8, 10)), monthDays(m));
+    return `${m}-${pad(d)}`;
+  }
+
+  function roadmapSteps(state, todayStr) {
+    if (!state.roadmap) return [];
+    const { start, steps } = state.roadmap;
+    return R.ROADMAP_STEPS.map((st) => {
+      const date = st.days ? addDays(start, st.days) : addMonthsDate(start, st.months);
+      const v = steps[st.key] || { title: "", done: false, doneAt: 0 };
+      return { key: st.key, label: st.label, date, title: v.title, done: v.done, doneAt: v.doneAt, passed: date <= todayStr, left: daysBetween(todayStr, date) };
+    });
+  }
+
+  // 次の節目（まだ達成していなくて、一番近いもの）。
+  const nextStep = (state, todayStr) => roadmapSteps(state, todayStr).find((s) => !s.done && s.title) || null;
+  // 半年後の節目を過ぎたら、作り直せる。
+  const roadmapOver = (state, todayStr) => Boolean(state.roadmap) && roadmapSteps(state, todayStr).slice(-1)[0].date < todayStr;
+
+  function setRoadmap(state, todayStr, titles, keepStart = true) {
+    const start = keepStart && state.roadmap ? state.roadmap.start : todayStr;
+    const old = keepStart && state.roadmap ? state.roadmap.steps : {};
+    const steps = {};
+    for (const st of R.ROADMAP_STEPS) {
+      const title = str(titles[st.key], R.MAX_TITLE);
+      const prev = old[st.key];
+      steps[st.key] = { title, done: prev && prev.title === title ? prev.done : false, doneAt: prev && prev.title === title ? prev.doneAt : 0 };
+    }
+    return { ...state, roadmap: { start, steps } };
+  }
+
+  function toggleStep(state, key, now = Date.now()) {
+    if (!state.roadmap || !state.roadmap.steps[key]) return state;
+    const v = state.roadmap.steps[key];
+    return { ...state, roadmap: { ...state.roadmap, steps: { ...state.roadmap.steps, [key]: { ...v, done: !v.done, doneAt: v.done ? 0 : now } } } };
+  }
+
+  // 同じ名前のタスクに前回つけた分野（＋ボタンの候補で使う）。
+  function lastArea(state, title) {
+    const ids = new Set(state.areas.map((a) => a.id));
+    for (let i = state.tasks.length - 1; i >= 0; i -= 1) {
+      const t = state.tasks[i];
+      if (t.title === title && t.area && ids.has(t.area)) return t.area;
+    }
+    return "";
+  }
+
   return {
     RULES: R, today, addDays, daysBetween, weekKey, monthKey, periodOf, periodLabel, monthDays, addMonths, dateLabel, short, daysLeft, weekday,
     emptyState, emptyInbox, newId, cleanState, cleanInbox, STAMPS,
     tasksOn, stats, taskPt, perTaskPt, isComplete, goalsFor, goalPt, ledger, summary, yen, series,
     stage, coins, streak, totals, sticker, startDay, leftovers, carryOver, favorites, drawScratch, canScratch, canExchange, unseenComments,
+    areaColor, areaName, setAreas, reflectionOf, canReflect, reflect, radar, areaActivity, lastArea,
+    roadmapSteps, nextStep, roadmapOver, setRoadmap, toggleStep,
   };
 })();
 

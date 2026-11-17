@@ -21,7 +21,7 @@ function h(tag, props = {}, ...children) {
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";
-const SVG_TAGS = new Set(["ellipse", "circle", "path", "rect", "g", "line", "polygon", "polyline"]);
+const SVG_TAGS = new Set(["ellipse", "circle", "path", "rect", "g", "line", "polygon", "polyline"]); // うさぎの絵で使ってよい形
 // 絵の属性として許すもの（script や href などは入れない）。
 const SVG_ATTR = /^(cx|cy|r|rx|ry|x|y|width|height|d|fill|stroke|stroke-width|stroke-linecap|stroke-linejoin|opacity|fill-opacity|stroke-opacity|transform|points|x1|y1|x2|y2|class)$/;
 
@@ -39,6 +39,7 @@ const ICONS = {
   coin: "M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17zM12 7.5v9M9.5 9.5c0-1 1-1.7 2.5-1.7s2.5.7 2.5 1.7-1 1.4-2.5 1.7-2.5.8-2.5 1.8 1 1.7 2.5 1.7 2.5-.7 2.5-1.7",
   gear: "M12 8.8a3.2 3.2 0 1 0 0 6.4 3.2 3.2 0 0 0 0-6.4zM12 2.5v2.6M12 18.9v2.6M2.5 12h2.6M18.9 12h2.6M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8",
   plus: "M12 5v14M5 12h14",
+  heart: "M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z",
   left: "M15 5l-7 7 7 7",
   right: "M9 5l7 7-7 7",
   close: "M6 6l12 12M18 6L6 18",
@@ -152,7 +153,7 @@ function openSheet(build) {
   const onKey = (e) => { if (e.key === "Escape") close(); };
   const sheet = h("div", { class: "sheet", role: "dialog", "aria-modal": "true" });
   const back = h("div", { class: "sheet-backdrop", onclick: (e) => { if (e.target === back) close(); } }, sheet);
-  sheet.append(...[].concat(build(close)));
+  sheet.append(...[build(close)].flat(Infinity).filter(Boolean)); // 入れ子の一覧も広げる
   show(back, sheet);
   document.addEventListener("keydown", onKey);
   const first = sheet.querySelector("input, textarea");
@@ -164,7 +165,7 @@ function openModal(build) {
   const close = () => hide(back);
   const modal = h("div", { class: "modal", role: "dialog", "aria-modal": "true" });
   const back = h("div", { class: "modal-backdrop" }, modal);
-  modal.append(...[].concat(build(close)));
+  modal.append(...[build(close)].flat(Infinity).filter(Boolean));
   show(back);
   return close;
 }
@@ -217,6 +218,72 @@ function commentCard(c, coachName, isNew, onclick) {
     h("div", {},
       h("div", { class: "coach-name" }, `${coachName}から`, isNew ? h("span", { class: "new-badge" }, "NEW") : null),
       c.text ? h("div", { class: "coach-text" }, c.text) : null));
+}
+
+// ---- なりたい自分 ----
+// 分野のラベル（色の点と名前）。
+function areaTag(state, areaId) {
+  const name = Logic.areaName(state, areaId);
+  if (!name) return null;
+  const color = Logic.areaColor(state, areaId);
+  const tag = h("span", { class: "tag area-tag" }, h("span", { class: "area-dot", style: { background: color } }), name);
+  tag.style.borderColor = color;
+  return tag;
+}
+
+// レーダーチャート。なりたい点数（点線）・先週（うすい）・今週（こい）を重ねる。
+function radarChart(r, size = 300) {
+  const n = r.areas.length;
+  const c = size / 2;
+  const R0 = size / 2 - 52; // 名前を書く分の余白
+  const max = Logic.RULES.MAX_SCORE;
+  const pt = (i, v) => {
+    const ang = -Math.PI / 2 + (2 * Math.PI * i) / n;
+    return [c + Math.cos(ang) * R0 * (v / max), c + Math.sin(ang) * R0 * (v / max)];
+  };
+  const poly = (vals) => vals.map((v, i) => pt(i, v).map((x) => x.toFixed(1)).join(",")).join(" ");
+  const box = svg("svg", { viewBox: `0 0 ${size} ${size}`, class: "radar", role: "img", "aria-label": "なりたい自分のレーダーチャート" });
+  for (const lv of [2, 4, 6, 8, 10]) box.append(svg("polygon", { points: poly(Array(n).fill(lv)), class: "radar-grid" }));
+  r.areas.forEach((a, i) => {
+    const [x, y] = pt(i, max);
+    box.append(svg("line", { x1: c, y1: c, x2: x, y2: y, class: "radar-axis" }));
+  });
+  box.append(svg("polygon", { points: poly(r.target), class: "radar-target" }));
+  if (r.prev) box.append(svg("polygon", { points: poly(r.prev), class: "radar-prev" }));
+  if (r.now) {
+    box.append(svg("polygon", { points: poly(r.now), class: "radar-now" }));
+    r.now.forEach((v, i) => { const [x, y] = pt(i, v); box.append(svg("circle", { cx: x, cy: y, r: 4, fill: r.areas[i].color })); });
+  }
+  r.areas.forEach((a, i) => {
+    const [x, y] = pt(i, max + 2.2);
+    const label = svg("text", { x: x.toFixed(1), y: (y + 4).toFixed(1), "text-anchor": Math.abs(x - c) < 8 ? "middle" : x < c ? "end" : "start", class: "radar-label", fill: a.color });
+    label.textContent = r.now ? `${a.name} ${r.now[i]}` : a.name; // 文字は textContent で入れる
+    box.append(label);
+  });
+  return box;
+}
+
+// 分野ごとの、今週終えた数。
+function areaBars(state, counts) {
+  const max = Math.max(1, ...Object.values(counts));
+  return h("div", { class: "area-bars" }, state.areas.map((a) => {
+    const bar = h("div", { class: "area-bar-fill" });
+    bar.style.width = `${(counts[a.id] / max) * 100}%`;
+    bar.style.background = Logic.areaColor(state, a.id);
+    return h("div", { class: "area-bar" }, h("span", { class: "area-bar-name" }, a.name), h("div", { class: "area-bar-track" }, bar), h("span", { class: "area-bar-num" }, `${counts[a.id]}`));
+  }));
+}
+
+// 分野を選ぶチップ（もう一度押すと外れる）。
+function areaPicker(state, selected, onChange) {
+  const box = h("div", { class: "chips area-chips" });
+  const draw = () => box.replaceChildren(...state.areas.map((a) => {
+    const chip = h("button", { class: `chip${selected === a.id ? " active" : ""}`, "data-area": a.id, onclick: () => { selected = selected === a.id ? "" : a.id; draw(); onChange(selected); } },
+      h("span", { class: "area-dot", style: { background: Logic.areaColor(state, a.id) } }), a.name);
+    return chip;
+  }));
+  draw();
+  return { el: box, set: (v) => { selected = v; draw(); } };
 }
 
 // ---- 棒グラフ ----

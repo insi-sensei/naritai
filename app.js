@@ -190,7 +190,8 @@ function scratchCard(amount) {
   return h("div", {}, box, h("button", { class: "btn small ghost", id: "scratch-all", onclick: reveal }, "いっきに全部けずる"));
 }
 
-function addTask(title, target, routine) {
+function addTask(title, target, routine, area = "") {
+  const tagArea = area && state.areas.some((a) => a.id === area) ? { area } : {};
   title = title.trim().slice(0, R().MAX_TITLE);
   if (!title) return false;
   if (target === "today") {
@@ -201,13 +202,13 @@ function addTask(title, target, routine) {
     if (routine) {
       if (routines.length >= R().MAX_ROUTINES) { toast("いつものはこれ以上ふやせません"); return false; }
       routineId = Logic.newId();
-      routines = [...routines, { id: routineId, title }];
+      routines = [...routines, { id: routineId, title, ...tagArea }];
     }
-    tasks.push({ id: Logic.newId(), date: day, title, done: false, doneAt: 0, ...(routineId ? { routine: routineId } : {}) });
+    tasks.push({ id: Logic.newId(), date: day, title, done: false, doneAt: 0, ...(routineId ? { routine: routineId } : {}), ...tagArea });
     state = { ...state, tasks, routines };
   } else {
     const kind = target;
-    state = { ...state, goals: [...state.goals, { id: Logic.newId(), kind, period: Logic.periodOf(kind, day), title, done: false, doneAt: 0 }] };
+    state = { ...state, goals: [...state.goals, { id: Logic.newId(), kind, period: Logic.periodOf(kind, day), title, done: false, doneAt: 0, ...tagArea }] };
   }
   save();
   return true;
@@ -249,8 +250,10 @@ function openAdd(defaultTarget = "today") {
       }, label)));
     };
     drawSeg();
-    const done = (title) => {
-      if (addTask(title, target, target === "today" && routine.checked)) {
+    let area = "";
+    const picker = areaPicker(state, area, (v) => { area = v; });
+    const done = (title, chipArea) => {
+      if (addTask(title, target, target === "today" && routine.checked, chipArea === undefined ? area : chipArea)) {
         close();
         render();
         toast(target === "today" ? "追加したよ" : "目標を追加したよ");
@@ -261,9 +264,10 @@ function openAdd(defaultTarget = "today") {
     return [
       h("h2", {}, "なにをやる？"),
       input,
-      favs.length ? h("div", {}, h("p", { class: "sub" }, "よく使う（タップで追加）"), h("div", { class: "chips" }, favs.map((f) => h("button", { class: "chip", onclick: () => done(f) }, f)))) : null,
+      favs.length ? h("div", {}, h("p", { class: "sub" }, "よく使う（タップで追加）"), h("div", { class: "chips" }, favs.map((f) => h("button", { class: "chip", onclick: () => done(f, area || Logic.lastArea(state, f)) }, f)))) : null,
       h("p", { class: "sub" }, "入れる先"),
       seg,
+      state.areas.length ? h("div", {}, h("p", { class: "sub" }, "なりたい自分の分野（えらばなくてもOK）"), picker.el) : null,
       routineRow,
       h("button", { class: "btn primary", id: "add-submit", onclick: () => done(input.value) }, "追加する"),
     ];
@@ -303,6 +307,7 @@ function taskRow(t, perPt) {
     h("span", { class: "title" }, t.title),
     t.from === "routine" ? h("span", { class: "tag" }, "いつもの") : null,
     t.from === "owner" ? h("span", { class: "tag" }, `${coach()}から`) : null,
+    t.area ? areaTag(state, t.area) : null,
     h("span", { class: "pt" }, t.done ? "" : `+${perPt}pt`));
   row.addEventListener("click", () => toggleTask(t, row));
   // にいにからのタスクは消せない（にいにの画面で消す）。
@@ -362,6 +367,11 @@ function renderHome() {
       h("span", {}, "📦"), h("span", {}, `昨日の残り${left.length}個を今日にうつす`),
       h("span", { class: "x", role: "button", "aria-label": "閉じる", onclick: (e) => { e.stopPropagation(); profile.carryDismissed = day; saveProfile(); render(); } }, "×")));
   }
+  // 土日は、今週の振り返りをすすめる（シートと同じ点数づけ）。
+  const wd = Logic.weekday(day);
+  if (Logic.canReflect(state, day) && (wd === 6 || wd === 0)) {
+    els.push(h("button", { class: "banner", id: "reflect-banner", onclick: openReflect }, h("span", {}, "🪞"), h("span", {}, `今週の振り返り +${fmt(R().REFLECT_PT)}pt`)));
+  }
   if (allDone && !state.scratches[day]) {
     els.push(h("button", { class: "banner", id: "scratch-banner", onclick: () => complete() }, h("span", {}, "🎫"), h("span", {}, "ボーナススクラッチが削れるよ！")));
   }
@@ -381,7 +391,8 @@ function goalCard(g, kind) {
   const card = h("button", { class: `goal card${g.done ? " done" : ""}`, "data-id": g.id },
     h("span", { class: "check", "aria-hidden": "true" }),
     h("span", { class: "goal-title" }, g.title),
-    g.from === "owner" ? h("span", { class: "tag" }, `${coach()}から`) : null);
+    g.from === "owner" ? h("span", { class: "tag" }, `${coach()}から`) : null,
+    g.area ? areaTag(state, g.area) : null);
   card.addEventListener("click", () => toggleGoal(g));
   return g.from === "owner" ? h("div", { class: "task-wrap" }, card) : swipeRow(card, () => removeItem("goal", g.id));
 }
@@ -423,6 +434,143 @@ function renderCalendar() {
       h("div", { class: "sub" }, `今月のシール ${cal.stickers}枚 ／ がんばった日 累計 ${t.activeDays}日 ✨`)),
     dayDetail(state, inbox, calSelected, coach()),
   ];
+}
+
+// ---- なりたい自分（振り返りシート）----
+function renderSelf() {
+  if (state.areas.length < R().MIN_AREAS) return [topbar(), areasSetup()];
+  const r = Logic.radar(state, day);
+  const done = Logic.reflectionOf(state, Logic.weekKey(day));
+  return [
+    topbar(),
+    h("section", { class: "card self-radar" },
+      h("div", { class: "row-between" }, h("strong", {}, "なりたい自分"), h("button", { class: "btn small ghost", id: "edit-areas", onclick: openAreas }, "分野を変える")),
+      radarChart(r),
+      h("div", { class: "radar-legend" },
+        h("span", { class: "lg target" }, "なりたい点数"),
+        r.prev ? h("span", { class: "lg prev" }, `前回 ${Logic.short(r.prevWeek)}週`) : null,
+        r.now ? h("span", { class: "lg now" }, `今回 ${Logic.short(r.nowWeek)}週`) : null),
+      h("button", { class: `btn ${done ? "ghost" : "primary"}`, id: "open-reflect", onclick: openReflect },
+        done ? "今週の点数を付け直す" : `今週の振り返りをする +${fmt(R().REFLECT_PT)}pt`)),
+    h("section", { class: "card" },
+      h("strong", {}, "今週がんばった数（分野ごと）"),
+      h("p", { class: "sub" }, "＋でタスクや目標を入れるときに分野をえらぶと、ここに入るよ"),
+      areaBars(state, Logic.areaActivity(state, inbox, day))),
+    roadmapCard(),
+  ];
+}
+
+function areasSetup() {
+  const examples = ["勉強", "健康", "友だち", "お金", "趣味", "自分みがき", "英語", "家族"];
+  const inputs = examples.map((ex, i) => h("input", { class: "text", id: `area-${i}`, maxlength: R().MAX_AREA_NAME, placeholder: `例：${ex}`, value: state.areas[i] ? state.areas[i].name : "", "aria-label": `分野${i + 1}` }));
+  return h("section", { class: "card" },
+    h("h2", {}, "なりたい自分の分野を決めよう"),
+    h("p", { class: "sub" }, `振り返りシートと同じ分野を${R().MIN_AREAS}〜${R().MAX_AREAS}個入れてね。毎週ここで点数をつけると、レーダーチャートになるよ`),
+    h("div", { class: "area-inputs" }, inputs),
+    h("button", {
+      class: "btn primary", id: "save-areas",
+      onclick: () => {
+        const next = Logic.setAreas(state, inputs.map((x) => x.value));
+        if (!next) { toast(`分野を${R().MIN_AREAS}個以上入れてね`); return; }
+        state = next; save(); render(); toast("分野を決めたよ");
+      },
+    }, "決める"));
+}
+
+function openAreas() {
+  openSheet((close) => {
+    const inputs = Array.from({ length: R().MAX_AREAS }, (_, i) => h("input", { class: "text", maxlength: R().MAX_AREA_NAME, value: state.areas[i] ? state.areas[i].name : "", placeholder: "（空ならなし）", "aria-label": `分野${i + 1}` }));
+    return [
+      h("h2", {}, "分野を変える"),
+      h("p", { class: "sub" }, "名前を変えても、前の点数は残るよ。空にした分野はなくなる"),
+      h("div", { class: "area-inputs" }, inputs),
+      h("button", { class: "btn primary", onclick: () => {
+        const next = Logic.setAreas(state, inputs.map((x) => x.value));
+        if (!next) { toast(`分野を${R().MIN_AREAS}個以上入れてね`); return; }
+        state = next; save(); close(); render(); toast("分野を変えたよ");
+      } }, "保存"),
+    ];
+  });
+}
+
+// 週の振り返り。分野ごとに、今の自分を0〜10点で。なりたい点数も変えられる。
+function openReflect() {
+  const week = Logic.weekKey(day);
+  const old = Logic.reflectionOf(state, week);
+  const prev = Logic.radar(state, Logic.addDays(week, -1)).now;
+  openSheet((close) => {
+    const scores = {};
+    const targets = {};
+    const rows = state.areas.map((a, i) => {
+      scores[a.id] = old && a.id in old.scores ? old.scores[a.id] : (prev ? prev[i] : 5);
+      targets[a.id] = a.target;
+      const val = h("b", { class: "score-val" }, String(scores[a.id]));
+      const range = h("input", { type: "range", min: 0, max: R().MAX_SCORE, step: 1, value: String(scores[a.id]), "aria-label": `${a.name}の今の点数`, "data-area": a.id });
+      range.addEventListener("input", () => { scores[a.id] = Number(range.value); val.textContent = range.value; });
+      const tval = h("small", { class: "target-val" }, `なりたい ${a.target}`);
+      const minus = h("button", { class: "step-btn small", "aria-label": `${a.name}のなりたい点数をへらす`, onclick: () => { targets[a.id] = Math.max(0, targets[a.id] - 1); tval.textContent = `なりたい ${targets[a.id]}`; } }, "−");
+      const plus = h("button", { class: "step-btn small", "aria-label": `${a.name}のなりたい点数をふやす`, onclick: () => { targets[a.id] = Math.min(R().MAX_SCORE, targets[a.id] + 1); tval.textContent = `なりたい ${targets[a.id]}`; } }, "＋");
+      return h("div", { class: "score-row" },
+        h("div", { class: "row-between" }, h("span", {}, h("span", { class: "area-dot", style: { background: Logic.areaColor(state, a.id) } }), a.name), val),
+        range,
+        h("div", { class: "target-row" }, minus, tval, plus));
+    });
+    return [
+      h("h2", {}, "今週の振り返り"),
+      h("p", { class: "sub" }, `いまの自分は何点？（0〜${R().MAX_SCORE}）`),
+      rows,
+      h("button", { class: "btn primary", id: "reflect-save", onclick: () => {
+        const first = !old;
+        state = Logic.reflect(state, day, scores, targets);
+        save(); close(); render();
+        if (first) { confetti(); toast(`振り返りできたね！ +${fmt(R().REFLECT_PT)}pt`); } else toast("付け直したよ");
+      } }, old ? "付け直す" : `保存して +${fmt(R().REFLECT_PT)}pt`),
+    ];
+  });
+}
+
+// 道のり（1週間後〜半年後）。
+function roadmapCard() {
+  const steps = Logic.roadmapSteps(state, day);
+  if (!steps.length) {
+    return h("section", { class: "card" }, h("strong", {}, "🗺️ 道のり"),
+      h("p", { class: "sub" }, "1週間後・2週間後・1か月後・2か月後・3か月後・半年後に、どうなっていたい？"),
+      h("button", { class: "btn primary", id: "open-roadmap", onclick: () => openRoadmap(false) }, "道のりを作る"));
+  }
+  const over = Logic.roadmapOver(state, day);
+  return h("section", { class: "card roadmap" },
+    h("div", { class: "row-between" }, h("strong", {}, "🗺️ 道のり"), h("button", { class: "btn small ghost", id: "edit-roadmap", onclick: () => openRoadmap(!over) }, over ? "新しく作る" : "書き直す")),
+    h("p", { class: "sub" }, `${Logic.dateLabel(state.roadmap.start)} から`),
+    h("ol", { class: "road" }, steps.map((st) => h("li", { class: `road-step${st.done ? " done" : ""}${st.passed && !st.done ? " passed" : ""}`, "data-key": st.key },
+      h("button", {
+        class: "check", "aria-label": st.done ? "達成を取り消す" : "達成した", disabled: !st.title,
+        onclick: () => { state = Logic.toggleStep(state, st.key); save(); render(); if (!st.done) { confetti(); toast("節目クリア！"); } },
+      }),
+      h("div", { class: "road-body" },
+        h("div", { class: "road-when" }, `${st.label}  ${Logic.short(st.date)}`, !st.passed && !st.done ? h("small", {}, ` あと${st.left}日`) : null),
+        h("div", { class: "road-title" }, st.title || "（まだ書いていない）"))))));
+}
+
+function openRoadmap(keepStart) {
+  const steps = keepStart ? Logic.roadmapSteps(state, day) : [];
+  openSheet((close) => {
+    const inputs = R().ROADMAP_STEPS.map((st) => {
+      const cur = steps.find((x) => x.key === st.key);
+      return h("input", { class: "text", maxlength: R().MAX_TITLE, "data-key": st.key, value: cur ? cur.title : "", placeholder: "どうなっていたい？", "aria-label": st.label });
+    });
+    return [
+      h("h2", {}, keepStart ? "道のりを書き直す" : "道のりを作る"),
+      h("p", { class: "sub" }, keepStart ? "出発の日はそのまま。同じ文の達成は残るよ" : "今日が出発の日になるよ"),
+      R().ROADMAP_STEPS.map((st, i) => h("div", { class: "field" }, h("label", {}, st.label), inputs[i])),
+      h("button", { class: "btn primary", id: "roadmap-save", onclick: () => {
+        const titles = {};
+        for (const el of inputs) titles[el.dataset.key] = el.value;
+        if (!Object.values(titles).some((t) => t.trim())) { toast("1つは書いてね"); return; }
+        state = Logic.setRoadmap(state, day, titles, keepStart);
+        save(); close(); render(); toast("道のりを保存したよ");
+      } }, "保存"),
+    ];
+  });
 }
 
 function renderPoints() {
@@ -490,7 +638,7 @@ function exchangeView(sm) {
 }
 
 function tabsBar() {
-  const items = [["home", "home", "ホーム"], ["goals", "goal", "目標"], ["calendar", "cal", "シール帳"], ["points", "coin", "ポイント"]];
+  const items = [["home", "home", "ホーム"], ["goals", "goal", "目標"], ["self", "heart", "なりたい"], ["calendar", "cal", "シール帳"], ["points", "coin", "ポイント"]];
   return h("nav", { class: "tabs" }, items.map(([id, ic, label]) => h("button", {
     class: `tab${tab === id ? " active" : ""}`, id: `tab-${id}`, "aria-current": tab === id ? "page" : undefined,
     onclick: () => { tab = id; if (id === "calendar") { calMonth = Logic.monthKey(day); calSelected = day; } render(); window.scrollTo(0, 0); },
@@ -504,7 +652,7 @@ function render() {
     app.replaceChildren(onboarding());
     return;
   }
-  const screens = { home: renderHome, goals: renderGoals, calendar: renderCalendar, points: renderPoints };
+  const screens = { home: renderHome, goals: renderGoals, self: renderSelf, calendar: renderCalendar, points: renderPoints };
   app.replaceChildren(h("div", { class: "screen" }, screens[tab]()), tabsBar());
 }
 

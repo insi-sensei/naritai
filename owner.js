@@ -93,6 +93,7 @@ function tasksCard(date) {
       h("span", { class: "check", "aria-hidden": "true" }),
       h("span", { class: "title" }, t.title),
       t.from === "owner" ? h("span", { class: "tag" }, "にいにから") : t.from === "routine" ? h("span", { class: "tag" }, "いつもの") : null,
+      t.area ? areaTag(state, t.area) : null,
       h("span", { class: "pt" }, t.done ? time(t.doneAt) : ""),
       t.from === "owner" && !t.done ? h("button", { class: "btn small ghost", onclick: () => send("/api/owner/delete", { type: "task", id: t.id }, "取り消しました") }, "取消") : null))) : h("p", { class: "empty" }, "タスクはありません"));
 }
@@ -126,16 +127,19 @@ function taskForm(date) {
     class: `seg-btn${target === v ? " active" : ""}`, onclick: () => { target = v; drawSeg(); },
   }, l)));
   drawSeg();
+  let area = "";
+  const picker = areaPicker(state, area, (v) => { area = v; });
   const goals = ["week", "month"].flatMap((k) => inbox.tasks.filter((t) => t.kind === k && t.period === Logic.periodOf(k, day)));
   return h("section", { class: "card" },
     h("strong", {}, `＋ ${who()}にタスク・目標を送る`),
     input, seg,
+    state.areas.length ? h("div", {}, h("p", { class: "sub" }, "分野（えらばなくてもOK）"), picker.el) : null,
     h("button", {
       class: "btn", id: "o-send-task",
       onclick: () => {
         const title = input.value.trim();
         if (!title) { toast("タスクを入れてください"); return; }
-        const body = target === "task" ? { kind: "task", date, title } : { kind: target, period: Logic.periodOf(target, day), title };
+        const body = { ...(target === "task" ? { kind: "task", date, title } : { kind: target, period: Logic.periodOf(target, day), title }), ...(area ? { area } : {}) };
         send("/api/owner/task", body, "送りました");
       },
     }, "送る"),
@@ -144,6 +148,27 @@ function taskForm(date) {
       return h("div", { class: "row-between" }, h("span", {}, `${done ? "✅" : "⬜"} ${g.kind === "week" ? "週" : "月"}：${g.title}`),
         done ? null : h("button", { class: "btn small ghost", onclick: () => send("/api/owner/delete", { type: "task", id: g.id }, "取り消しました") }, "取消"));
     })) : null);
+}
+
+// 生徒の「なりたい自分」（振り返りシート）。見るだけ。
+function selfCard() {
+  if (state.areas.length < Logic.RULES.MIN_AREAS) {
+    return h("section", { class: "card" }, h("strong", {}, "なりたい自分"), h("p", { class: "empty" }, `${who()}はまだ分野を決めていません`));
+  }
+  const r = Logic.radar(state, day);
+  const done = Logic.reflectionOf(state, Logic.weekKey(day));
+  const steps = Logic.roadmapSteps(state, day);
+  return h("section", { class: "card self-radar" },
+    h("div", { class: "row-between" }, h("strong", {}, "なりたい自分"), h("small", { class: "sub" }, done ? `今週の振り返り済み（${Logic.short(done.date)}）` : "今週の振り返りはまだ")),
+    radarChart(r),
+    h("div", { class: "radar-legend" },
+      h("span", { class: "lg target" }, "なりたい点数"),
+      r.prev ? h("span", { class: "lg prev" }, `前回 ${Logic.short(r.prevWeek)}週`) : null,
+      r.now ? h("span", { class: "lg now" }, `今回 ${Logic.short(r.nowWeek)}週`) : null),
+    h("p", { class: "sub" }, "今週がんばった数（分野ごと）"),
+    areaBars(state, Logic.areaActivity(state, inbox, day)),
+    steps.length ? h("div", {}, h("p", { class: "sub" }, `道のり（${Logic.short(state.roadmap.start)} から）`),
+      steps.map((st) => h("div", { class: "row-between" }, h("span", {}, `${st.done ? "✅" : "⬜"} ${st.label} ${Logic.short(st.date)}`), h("span", {}, st.title || "—")))) : h("p", { class: "sub" }, "道のりはまだ作っていません"));
 }
 
 function goalsCard() {
@@ -202,6 +227,7 @@ function render() {
     commentForm(selected),
     taskForm(selected),
     cal.el,
+    selfCard(),
     goalsCard(),
     chartCard(),
     settingsCard()));
