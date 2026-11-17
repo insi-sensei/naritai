@@ -63,9 +63,9 @@ const Logic = (() => {
 
   // ---- 空のデータ ----
   const emptyState = () => ({
-    v: 1, tasks: [], ownerDone: {}, goals: [], routines: [], logins: [], scratches: {}, requests: [], areas: [], reflections: [], roadmap: null, updatedAt: 0,
+    v: 1, tasks: [], ownerDone: {}, goals: [], routines: [], logins: [], scratches: {}, requests: [], areas: [], reflections: [], roadmap: null, diary: {}, updatedAt: 0,
   });
-  const emptyInbox = () => ({ v: 1, comments: [], tasks: [], decisions: {}, levels: {}, weights: { ...R.DEFAULT_WEIGHTS }, updatedAt: 0 });
+  const emptyInbox = () => ({ v: 1, comments: [], tasks: [], decisions: {}, levels: {}, weights: { ...R.DEFAULT_WEIGHTS }, penalties: [], awards: {}, budgets: {}, updatedAt: 0 });
 
   function newId(now = Date.now()) {
     return `${now.toString(36)}${Math.random().toString(36).slice(2, 8)}`.slice(0, 32);
@@ -77,6 +77,8 @@ const Logic = (() => {
   const isObj = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
   const str = (x, max) => (typeof x === "string" ? x.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, max) : "");
   const num = (x) => (Number.isFinite(x) && x >= 0 ? Math.floor(x) : 0);
+  // 改行を残す文（日記）
+  const text = (x, max) => (typeof x === "string" ? x.replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, max) : "");
   const list = (x, max) => (Array.isArray(x) ? x.slice(-max) : []);
   const LEVEL_KEYS = R.LEVELS.map((l) => l.key);
   // 難易度（ついていれば。ふつうは書かない）。
@@ -133,6 +135,16 @@ const Logic = (() => {
       }
       s.roadmap = { start: x.roadmap.start, steps };
     }
+    s.diary = {};
+    if (isObj(x.diary)) {
+      for (const d of Object.keys(x.diary).filter((k) => DATE.test(k)).sort().slice(-R.MAX_DIARY_DAYS)) {
+        const v = x.diary[d];
+        if (!isObj(v)) continue;
+        const e = {};
+        for (const it of R.DIARY_ITEMS) { const t = text(v[it.key], R.MAX_DIARY_TEXT); if (t) e[it.key] = t; }
+        if (Object.keys(e).length) s.diary[d] = { ...e, at: num(v.at) };
+      }
+    }
     s.logins = [...new Set(list(x.logins, 5000).filter((d) => typeof d === "string" && DATE.test(d)))].sort();
     const amounts = new Set(R.SCRATCH.map((p) => p.pt));
     s.scratches = cleanMap(x.scratches, (k) => DATE.test(k), (v) => (amounts.has(v) ? v : null));
@@ -144,6 +156,11 @@ const Logic = (() => {
   }
 
   const STAMPS = ["💯", "👏", "⭐", "🔥", "🌸", "🎉", "🫶", ""];
+
+  const validPenalty = (n) => Number.isInteger(n) && n >= R.PENALTY_STEP && n <= R.MAX_PENALTY && n % R.PENALTY_STEP === 0;
+
+  const validAward = (v) => Number.isInteger(v) && v >= 0 && v <= R.MAX_DAY_BUDGET && v % 10 === 0;
+  const validBudget = (v) => Number.isInteger(v) && v >= R.BUDGET_STEP && v <= R.MAX_DAY_BUDGET && v % R.BUDGET_STEP === 0;
 
   function cleanInbox(x) {
     const b = emptyInbox();
@@ -157,6 +174,10 @@ const Logic = (() => {
     b.levels = cleanMap(x.levels, (k) => ID.test(k), (v) => (LEVEL_KEYS.includes(v) ? v : null));
     b.weights = { ...R.DEFAULT_WEIGHTS };
     if (isObj(x.weights)) for (const k of LEVEL_KEYS) if (Number.isInteger(x.weights[k]) && x.weights[k] >= 1 && x.weights[k] <= R.MAX_WEIGHT) b.weights[k] = x.weights[k];
+    b.penalties = list(x.penalties, R.MAX_PENALTIES).filter((p) => isObj(p) && ID.test(p.id) && DATE.test(p.date) && validPenalty(p.amount))
+      .map((p) => ({ id: p.id, date: p.date, amount: p.amount, reason: str(p.reason, R.MAX_REASON), at: num(p.at) }));
+    b.awards = cleanMap(x.awards, (k) => ID.test(k), (v) => (validAward(v) ? v : null));
+    b.budgets = cleanMap(x.budgets, (k) => DATE.test(k), (v) => (validBudget(v) ? v : null));
     b.updatedAt = num(x.updatedAt);
     return b;
   }
@@ -168,7 +189,8 @@ const Logic = (() => {
     const w = inbox.weights || R.DEFAULT_WEIGHTS;
     const withLevel = (t) => {
       const level = (inbox.levels && inbox.levels[t.id]) || t.level || "normal";
-      return { ...t, level, w: w[level], wn: w.normal, fixedBy: inbox.levels && inbox.levels[t.id] ? "owner" : "" };
+      const award = inbox.awards && inbox.awards[t.id] !== undefined ? { award: inbox.awards[t.id] } : {};
+      return { ...t, level, w: w[level], wn: w.normal, fixedBy: inbox.levels && inbox.levels[t.id] ? "owner" : "", ...award };
     };
     const fromOwner = inbox.tasks.filter((t) => t.kind === "task" && t.date === date).map((t) => ({
       id: t.id, date, title: t.title, from: "owner", ...areaOf(t), ...levelOf(t), done: Boolean(state.ownerDone[t.id]), doneAt: state.ownerDone[t.id] || 0,
@@ -193,6 +215,42 @@ const Logic = (() => {
   const isComplete = (s) => s.total >= R.MIN_TASKS && s.done === s.total;
   // その日のタスクを1個終えると増えるポイント（画面の「+〇pt」の表示用）。
   const perTaskPt = (s, w = 1) => round10(R.DAY_TASK_PT * w / denom(s));
+
+  // にいにが1個ずつptを入れる日か。
+  const awardMode = (date) => date >= R.AWARD_FROM;
+  // その日に配れるpt（ふだん AWARD_DAY_PT。にいにが日ごとに増やせる）。
+  const budgetOf = (inbox, date) => (inbox.budgets && inbox.budgets[date]) || R.AWARD_DAY_PT;
+  // にいにが入れた分の合計。
+  const awardedOf = (tasks) => tasks.filter((t) => t.done && Number.isInteger(t.award)).reduce((a, t) => a + t.award, 0);
+  // その日のタスクのpt。AWARD_FROM より前は自動の計算。
+  function dayPt(tasks, date, inbox) {
+    if (!awardMode(date)) return taskPt(stats(tasks));
+    return Math.min(budgetOf(inbox, date), awardedOf(tasks));
+  }
+  // おすすめpt：その日の配れる分を、むずかしさの重みで分けた数。
+  const suggestPt = (s, w, budget) => round10(budget * w / denom(s));
+  // 終えたのに、にいにがまだptを入れていないタスクの数。
+  const waiting = (tasks, date) => (awardMode(date) ? tasks.filter((t) => t.done && t.award === undefined).length : 0);
+  // にいにの「査定まち」：直近14日の日ごとの数。
+  function pendingAwards(state, inbox, todayStr) {
+    const out = [];
+    for (let i = 0; i <= 14; i++) {
+      const d = addDays(todayStr, -i);
+      const n = waiting(tasksOn(state, inbox, d), d);
+      if (n) out.push({ date: d, count: n });
+    }
+    return out;
+  }
+
+  // 毎日の日記。7日前まで書ける。全部空なら消す。
+  function setDiary(state, date, fields, todayStr) {
+    if (!DATE.test(date) || !canEditDay(date, todayStr)) return { error: `日記は${R.BACK_DAYS}日前から今日までだよ` };
+    const e = {};
+    for (const it of R.DIARY_ITEMS) { const t = text(fields[it.key], R.MAX_DIARY_TEXT); if (t) e[it.key] = t; }
+    const diary = { ...state.diary };
+    if (Object.keys(e).length) diary[date] = { ...e, at: Date.now() }; else delete diary[date];
+    return { state: { ...state, diary } };
+  }
 
   // 過ぎた日のタスクをさわれるか（今日から BACK_DAYS 日前まで）。
   const canEditDay = (date, todayStr) => date <= todayStr && daysBetween(date, todayStr) <= R.BACK_DAYS;
@@ -228,8 +286,9 @@ const Logic = (() => {
     });
     let completeCount = 0;
     for (const date of taskDates(state, inbox, todayStr)) {
-      const s = stats(tasksOn(state, inbox, date));
-      const pt = taskPt(s);
+      const list = tasksOn(state, inbox, date);
+      const s = stats(list);
+      const pt = dayPt(list, date, inbox);
       if (pt > 0) rows.push({ date, amount: pt, reason: `今日のタスク ${Math.round(s.rate * 100)}%`, kind: "task", order: 2 });
       if (isComplete(s)) {
         completeCount += 1;
@@ -254,6 +313,9 @@ const Logic = (() => {
     for (const q of state.requests) {
       const d = inbox.decisions[q.id];
       if (d) rows.push({ date: d.date, amount: -q.amount, reason: "にいにと交換", kind: "exchange", order: 6 });
+    }
+    for (const p of inbox.penalties || []) {
+      if (p.date <= todayStr) rows.push({ date: p.date, amount: -p.amount, reason: `にいにから：${p.reason || "約束やぶり"}`, kind: "penalty", order: 7 });
     }
     for (const r of state.reflections) {
       if (r.date <= todayStr) rows.push({ date: r.date, amount: R.REFLECT_PT, reason: "今週の振り返り", kind: "reflect", order: 5 });
@@ -516,6 +578,41 @@ const Logic = (() => {
     return { ...state, roadmap: { ...state.roadmap, steps: { ...state.roadmap.steps, [key]: { ...v, done: !v.done, doneAt: v.done ? 0 : now } } } };
   }
 
+  // ---- 長押しの編集 ----
+  // 生徒が入れたタスクを書き換える。名前・日付（7日前まで）・難易度・分野。
+  // changes.routineToo が true なら、「いつもの」の元も同じ名前・難易度・分野にする。
+  function editTask(state, id, changes, todayStr) {
+    const t = state.tasks.find((x) => x.id === id);
+    if (!t) return { error: "タスクが見つかりません" };
+    const title = changes.title === undefined ? t.title : str(changes.title, R.MAX_TITLE);
+    if (!title) return { error: "名前を入れてね" };
+    const date = changes.date === undefined ? t.date : changes.date;
+    if (!DATE.test(date) || !canEditDay(date, todayStr)) return { error: `日付は${R.BACK_DAYS}日前から今日までだよ` };
+    if (date !== t.date && !canEditDay(t.date, todayStr)) return { error: "この日のタスクはもう変えられないよ" };
+    const ids = new Set(state.areas.map((a) => a.id));
+    const area = changes.area === undefined ? t.area : changes.area && ids.has(changes.area) ? changes.area : "";
+    const level = changes.level === undefined ? t.level : changes.level;
+    const next = { id: t.id, date, title, done: t.done, doneAt: t.doneAt, ...(t.added ? { added: t.added } : {}),
+      ...(t.routine && date === t.date ? { routine: t.routine } : {}), ...(area ? { area } : {}), ...levelOf({ level }) };
+    let routines = state.routines;
+    if (changes.routineToo && t.routine) {
+      routines = routines.map((r) => (r.id === t.routine ? { id: r.id, title, ...(area ? { area } : {}), ...levelOf({ level }) } : r));
+    }
+    return { state: { ...state, tasks: state.tasks.map((x) => (x.id === id ? next : x)), routines } };
+  }
+
+  // 生徒が入れた目標を書き換える。名前と分野。
+  function editGoal(state, id, changes) {
+    const g = state.goals.find((x) => x.id === id);
+    if (!g) return { error: "目標が見つかりません" };
+    const title = changes.title === undefined ? g.title : str(changes.title, R.MAX_TITLE);
+    if (!title) return { error: "名前を入れてね" };
+    const ids = new Set(state.areas.map((a) => a.id));
+    const area = changes.area === undefined ? g.area : changes.area && ids.has(changes.area) ? changes.area : "";
+    const next = { id: g.id, kind: g.kind, period: g.period, title, done: g.done, doneAt: g.doneAt, ...(area ? { area } : {}) };
+    return { state: { ...state, goals: state.goals.map((x) => (x.id === id ? next : x)) } };
+  }
+
   // 同じ名前のタスクに前回つけた分野（＋ボタンの候補で使う）。
   function lastArea(state, title) {
     const ids = new Set(state.areas.map((a) => a.id));
@@ -528,11 +625,11 @@ const Logic = (() => {
 
   return {
     RULES: R, today, addDays, daysBetween, weekKey, monthKey, periodOf, periodLabel, monthDays, addMonths, dateLabel, short, daysLeft, weekday,
-    emptyState, emptyInbox, newId, cleanState, cleanInbox, STAMPS,
+    validPenalty, validAward, validBudget, awardMode, budgetOf, awardedOf, dayPt, suggestPt, waiting, pendingAwards, setDiary, emptyState, emptyInbox, newId, cleanState, cleanInbox, STAMPS,
     tasksOn, stats, taskPt, perTaskPt, isComplete, canEditDay, isLate, levelInfo, goalsFor, goalPt, ledger, summary, yen, series,
     stage, coins, streak, totals, sticker, startDay, leftovers, carryOver, favorites, drawScratch, canScratch, canExchange, unseenComments,
     areaColor, areaName, setAreas, reflectionOf, canReflect, reflect, radar, areaActivity, lastArea,
-    roadmapSteps, nextStep, roadmapOver, setRoadmap, toggleStep,
+    roadmapSteps, nextStep, roadmapOver, setRoadmap, toggleStep, editTask, editGoal,
   };
 })();
 

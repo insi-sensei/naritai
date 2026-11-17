@@ -205,7 +205,7 @@ function dayDetail(state, inbox, date, coachName) {
   const s = Logic.stats(tasks);
   const comments = inbox.comments.filter((c) => c.date === date);
   return h("div", { class: "day-detail card" },
-    h("div", { class: "row-between" }, h("strong", {}, Logic.dateLabel(date)), h("span", {}, s.total ? `${s.done}/${s.total}  ${Math.round(s.rate * 100)}%  +${fmt(Logic.taskPt(s))}pt` : "")),
+    h("div", { class: "row-between" }, h("strong", {}, Logic.dateLabel(date)), h("span", {}, s.total ? `${s.done}/${s.total}  ${Math.round(s.rate * 100)}%  +${fmt(Logic.dayPt(tasks, date, inbox))}pt` : "")),
     tasks.length ? h("div", { class: "task-list" }, tasks.map((t) => h("div", { class: `task${t.done ? " done" : ""}` },
       h("span", { class: "check", "aria-hidden": "true" }), h("span", { class: "title" }, t.title),
       t.from === "owner" ? h("span", { class: "tag" }, `${coachName}から`) : null))) : h("p", { class: "empty" }, "この日のタスクはありません"),

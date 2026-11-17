@@ -59,6 +59,7 @@ function summaryCard() {
   const s = Logic.stats(Logic.tasksOn(state, inbox, day));
   const st = Logic.streak(state, inbox, day);
   const stg = Logic.stage(sm.earned);
+  const pend = Logic.pendingAwards(state, inbox, day);
   return h("section", { class: "card owner-summary" },
     h("div", { class: "row-between" }, h("strong", {}, `${who()}のようす`), h("small", { class: "sub" }, state.updatedAt ? `最終更新 ${Logic.short(Logic.today(new Date(state.updatedAt)))} ${time(state.updatedAt)}` : "まだデータがありません")),
     h("div", { class: "owner-head" },
@@ -68,7 +69,11 @@ function summaryCard() {
         h("div", { class: "progress" }, h("div", { class: "progress-fill", style: { width: `${Math.round(s.rate * 100)}%` } })),
         h("div", {}, `🔥${st.days}日連続  ${STAGE_NAMES[stg.index]}`),
         h("div", { id: "o-balance" }, `💰 ${fmt(sm.balance)}pt`),
-        h("div", { class: "delta" }, `今週 +${fmt(sm.thisWeek)}pt`))));
+        h("div", { class: "delta" }, `今週 +${fmt(sm.thisWeek)}pt`))),
+    pend.length ? h("div", { class: "pending-box", id: "o-pending" }, h("span", {}, "🔔 査定まち"), pend.map((p) => h("button", {
+      class: "chip", onclick: () => { selected = p.date; calMonth = Logic.monthKey(p.date); render(); },
+    }, `${Logic.short(p.date)} ${p.count}件`))) : null,
+    h("a", { class: "btn small ghost preview-link", id: "o-preview", href: "index.html?preview=1" }, "生徒の画面を見る（さわっても保存されません）"));
 }
 
 function requestsCard() {
@@ -85,22 +90,66 @@ function requestsCard() {
       }, "渡した")))));
 }
 
+// その日に配れるpt。ふだん2,000pt、＋−でその日だけ変えられる。
+function budgetRow(tasks, date) {
+  const R = Logic.RULES;
+  const budget = Logic.budgetOf(inbox, date);
+  const given = Logic.awardedOf(tasks);
+  const set = (pt) => send("/api/owner/budget", { date, pt }, `この日に配れる分を ${fmt(pt)}pt にしました`);
+  return h("div", { class: "budget-row", id: "o-budget" },
+    h("div", {}, h("b", {}, `配れる ${fmt(budget)}pt`), h("span", { class: "sub" }, ` のうち ${fmt(given)}pt 配った（のこり ${fmt(budget - given)}pt）`)),
+    h("div", { class: "stepper" },
+      h("button", { class: "step-btn small", "aria-label": "配れる分をへらす", disabled: budget - R.BUDGET_STEP < Math.max(R.BUDGET_STEP, given), onclick: () => set(budget - R.BUDGET_STEP) }, "−"),
+      h("button", { class: "step-btn small", "aria-label": "配れる分をふやす", disabled: budget + R.BUDGET_STEP > R.MAX_DAY_BUDGET, onclick: () => set(budget + R.BUDGET_STEP) }, "＋")));
+}
+
+// 終えたタスクに、にいにがptを入れる欄。
+const editingAward = new Set();
+function awardRow(t, st, date) {
+  if (!Logic.awardMode(date) || !t.done) return null;
+  if (t.award !== undefined && !editingAward.has(t.id)) {
+    return h("div", { class: "owner-award" }, h("span", { class: "sub" }, `にいにが決めた：+${fmt(t.award)}pt`),
+      h("button", { class: "btn small ghost", onclick: () => { editingAward.add(t.id); render(); } }, "直す"));
+  }
+  const budget = Logic.budgetOf(inbox, date);
+  const input = h("input", { class: "text award-input", type: "number", inputmode: "numeric", min: 0, max: budget, step: 10,
+    value: String(t.award !== undefined ? t.award : Logic.suggestPt(st, t.w, budget)), "aria-label": `「${t.title}」のpt` });
+  return h("div", { class: "owner-award" }, input, h("span", {}, "pt"),
+    h("button", { class: "btn small award-ok", onclick: async () => {
+      const pt = Math.round(Number(input.value) / 10) * 10;
+      if (!Logic.validAward(pt)) { toast(`0〜${fmt(budget)}pt で入れてください`); return; }
+      editingAward.delete(t.id);
+      await send("/api/owner/award", { id: t.id, pt }, `「${t.title}」を +${fmt(pt)}pt にしました`);
+    } }, "決定"));
+}
+
+// その日の日記（生徒が書いたもの）。
+function diaryCard(date) {
+  const e = state.diary[date];
+  return h("section", { class: "card", id: "o-diary" }, h("strong", {}, `📔 ${Logic.dateLabel(date)} の日記`),
+    e ? Logic.RULES.DIARY_ITEMS.map((it) => (e[it.key] ? h("div", { class: "diary-item" }, h("span", { class: "diary-label" }, it.label), h("p", { class: "diary-body" }, e[it.key])) : null))
+      : h("p", { class: "empty" }, "まだ書いていません"));
+}
+
 function tasksCard(date) {
   const tasks = Logic.tasksOn(state, inbox, date);
   const st = Logic.stats(tasks);
   return h("section", { class: "card" },
-    h("div", { class: "row-between" }, h("strong", {}, `${Logic.dateLabel(date)} のタスク`), st.total ? h("span", { class: "sub" }, `${st.done}/${st.total}  +${fmt(Logic.taskPt(st))}pt`) : null),
-    tasks.length ? h("p", { class: "sub" }, "★を押すと、むずかしさを直せます（直したものが優先）") : null,
+    h("div", { class: "row-between" }, h("strong", {}, `${Logic.dateLabel(date)} のタスク`), st.total ? h("span", { class: "sub" }, `${st.done}/${st.total}  +${fmt(Logic.dayPt(tasks, date, inbox))}pt`) : null),
+    Logic.awardMode(date) ? budgetRow(tasks, date) : null,
+    tasks.length ? h("p", { class: "sub" }, Logic.awardMode(date) ? "終えたタスクに、1個ずつptを入れてください（はじめは★から出したおすすめの数）" : "pt は1個ずつの分（自動の計算の日）。★を押すと、むずかしさを直せます") : null,
     tasks.length ? h("div", { class: "task-list" }, tasks.map((t) => h("div", { class: `task owner-task${t.done ? " done" : ""}`, "data-id": t.id },
       h("div", { class: "owner-task-top" },
         h("span", { class: "check", "aria-hidden": "true" }),
         h("span", { class: "title" }, t.title),
-        h("span", { class: "pt" }, t.done ? time(t.doneAt) : `+${Logic.perTaskPt(st, t.w)}pt`)),
+        h("span", { class: "owner-pt" }, h("b", { class: "o-task-pt" }, !Logic.awardMode(date) ? `+${fmt(Logic.perTaskPt(st, t.w))}pt` : !t.done ? "" : t.award !== undefined ? `+${fmt(t.award)}pt` : "査定まち"), h("small", { class: "sub" }, t.done ? `✓ ${time(t.doneAt)}` : "まだ"))),
+      awardRow(t, st, date),
       h("div", { class: "owner-task-tags" },
         h("div", { class: "level-pick", role: "group", "aria-label": "むずかしさ" }, Logic.RULES.LEVELS.map((l) => h("button", {
           class: `level-btn${t.level === l.key ? " active" : ""}`, "data-level": l.key, title: l.label,
           onclick: () => { if (t.level !== l.key) send("/api/owner/level", { id: t.id, level: l.key }, `「${t.title}」を${l.label}にしました`); },
         }, l.stars))),
+        h("span", { class: "o-level-name" }, Logic.levelInfo(t.level).label),
         t.fixedBy ? h("span", { class: "tag" }, "にいにが直した") : null,
         Logic.isLate(t) ? h("span", { class: "tag late-tag" }, `あとから（${Logic.short(t.added)}に追加）`) : null,
         t.from === "owner" ? h("span", { class: "tag" }, "にいにから") : t.from === "routine" ? h("span", { class: "tag" }, "いつもの") : null,
@@ -228,7 +277,8 @@ function weightsCard() {
     // 例：かんたん・ふつう・むずかしいを1個ずつ入れた日
     const tasks = L.map((l) => ({ done: true, w: w[l.key], wn: w.normal }));
     const st = Logic.stats(tasks);
-    example.textContent = `例：1個ずつの日 → ${L.map((l) => `${l.label} ${fmt(Logic.perTaskPt(st, w[l.key]))}pt`).join(" / ")}（合計 ${fmt(Logic.taskPt(st))}pt）`;
+    const b = Logic.RULES.AWARD_DAY_PT;
+    example.textContent = `おすすめの例：1個ずつの日 → ${L.map((l) => `${l.label} ${fmt(Logic.suggestPt(st, w[l.key], b))}pt`).join(" / ")}`;
   };
   const rows = L.map((l) => {
     const val = h("b", { class: "step-val small-val", id: `o-w-${l.key}` }, String(w[l.key]));
@@ -240,9 +290,34 @@ function weightsCard() {
   drawExample();
   return h("section", { class: "card" },
     h("strong", {}, "むずかしさとポイント"),
-    h("p", { class: "sub" }, `1日の上限 ${fmt(Logic.RULES.DAY_TASK_PT)}pt はそのまま。重みが大きいタスクほど多く配ります（1〜${Logic.RULES.MAX_WEIGHT}）`),
+    h("p", { class: "sub" }, `ptを入れるときの「おすすめ」の割合です。その日に配れる分（ふだん ${fmt(Logic.RULES.AWARD_DAY_PT)}pt）を、重みの割合で分けます（1〜${Logic.RULES.MAX_WEIGHT}）`),
     rows, example,
     h("button", { class: "btn", id: "o-save-weights", onclick: () => send("/api/owner/weights", w, "重みを保存しました") }, "保存"));
+}
+
+// 罰：うそなどが分かったとき、理由つきでポイントを引く。間違えたら取り消せる。
+function penaltyCard() {
+  const R = Logic.RULES;
+  let amount = 300;
+  const val = h("b", { class: "step-val small-val", id: "o-pen-amount" }, `${fmt(amount)}pt`);
+  const change = (d) => { amount = Math.min(R.MAX_PENALTY, Math.max(R.PENALTY_STEP, amount + d)); val.textContent = `${fmt(amount)}pt`; };
+  const reason = h("input", { class: "text", id: "o-pen-reason", type: "text", maxlength: R.MAX_REASON, placeholder: "理由（例：やってないのに完了にした）", "aria-label": "理由" });
+  const list = [...inbox.penalties].reverse().slice(0, 10);
+  return h("section", { class: "card" },
+    h("strong", {}, "ポイントを引く"),
+    h("p", { class: "sub" }, "約束をやぶったときに。理由は生徒の通帳に出ます"),
+    h("div", { class: "row-between" }, h("span", {}, "引く数"),
+      h("div", { class: "stepper" }, h("button", { class: "step-btn small", "aria-label": "へらす", onclick: () => change(-R.PENALTY_STEP) }, "−"), val,
+        h("button", { class: "step-btn small", "aria-label": "ふやす", onclick: () => change(R.PENALTY_STEP) }, "＋"))),
+    reason,
+    h("button", { class: "btn", id: "o-pen-send", onclick: () => {
+      if (!reason.value.trim()) { toast("理由を入れてください"); return; }
+      if (!confirm(`${fmt(amount)}pt を引きます。よいですか？`)) return;
+      send("/api/owner/penalty", { amount, reason: reason.value }, `${fmt(amount)}pt 引きました`);
+    } }, "引く"),
+    list.length ? h("div", { class: "pen-list" }, list.map((p) => h("div", { class: "row-between ledger-row" },
+      h("span", {}, `${Logic.short(p.date)} −${fmt(p.amount)}pt ${p.reason}`),
+      h("button", { class: "btn small ghost", onclick: () => send("/api/owner/delete", { type: "penalty", id: p.id }, "取り消しました") }, "取消")))) : null);
 }
 
 function settingsCard() {
@@ -267,11 +342,13 @@ function render() {
     summaryCard(),
     requestsCard(),
     tasksCard(selected),
+    diaryCard(selected),
     commentForm(selected),
     taskForm(selected),
     cal.el,
     selfCard(),
     weightsCard(),
+    penaltyCard(),
     goalsCard(),
     chartCard(),
     settingsCard()));

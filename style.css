@@ -1691,3 +1691,39 @@ textarea.text:focus { outline: none; border-color: var(--accent); }
 .weight-row .stepper { gap: 10px; }
 .small-val { font-size: 18px; min-width: 1.5em; text-align: center; }
 .level-seg .seg-btn { font-size: 12px; white-space: nowrap; letter-spacing: -0.5px; }
+
+/* にいに：タスクごとのポイントとむずかしさ */
+.owner-pt { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.2; }
+.owner-pt b { color: var(--accent, #e86f8f); font-size: 15px; }
+.o-level-name { font-size: 12px; color: var(--sub); margin-right: 4px; }
+
+/* 長押しの編集 */
+.btn.danger { color: #d0465f; border-color: #f1c3cc; }
+.task, .goal { -webkit-touch-callout: none; }
+
+/* にいにが割り振る */
+.owner-award { display: flex; align-items: center; gap: 8px; padding-left: 38px; }
+.award-input { width: 96px; min-height: 36px; padding: 4px 8px; }
+.budget-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-radius: 12px; background: var(--bg); }
+.pending-box { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; font-weight: 700; }
+.preview-link { display: inline-flex; align-items: center; margin-top: 10px; text-decoration: none; }
+.task .pt.waiting { color: var(--sub); font-size: 12px; }
+.task .pt.got { color: #3fa36b; font-weight: 700; }
+
+/* 見るだけモード */
+.preview-bar { position: sticky; top: 0; z-index: 50; display: flex; justify-content: space-between; gap: 8px; padding: 8px 14px; background: #fff3c4; color: #6b5200; font-size: 13px; font-weight: 700; }
+.preview-bar a { color: inherit; }
+
+/* ホーム：にいにのひとこと・ごほうびまで */
+.hero-comment { border: 2px solid var(--accent); padding: 18px; }
+.hero-comment .coach-text { font-size: 20px; font-weight: 700; line-height: 1.5; }
+.reward-card { display: flex; flex-direction: column; gap: 10px; }
+.reward-row { display: flex; align-items: center; gap: 10px; }
+.reward-ic { font-size: 24px; }
+.reward-main { flex: 1; display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+
+/* 日記 */
+.diary-item { display: flex; flex-direction: column; gap: 6px; }
+.diary-label { font-weight: 700; font-size: 14px; }
+.diary-text { min-height: 96px; resize: vertical; }
+.diary-body { white-space: pre-wrap; margin: 0; }

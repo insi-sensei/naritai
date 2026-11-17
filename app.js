@@ -1,15 +1,18 @@
 // なりたい自分へ — 生徒の画面。計算は logic.js、共通の部品は ui.js。
 
-const STATE_KEY = "naritai.state";
-const INBOX_KEY = "naritai.inbox";
-const PROFILE_KEY = "naritai.profile";
+// ?preview=1：にいにが自分のスマホで生徒の画面を確かめる（見るだけモード）。サーバーには何も送らない。
+const PREVIEW = new URLSearchParams(location.search).has("preview");
+const STATE_KEY = PREVIEW ? "naritai.preview.state" : "naritai.state";
+const INBOX_KEY = PREVIEW ? "naritai.preview.inbox" : "naritai.inbox";
+const PROFILE_KEY = PREVIEW ? "naritai.preview.profile" : "naritai.profile";
 const KEY_KEY = "naritai.key";
 const app = document.getElementById("app");
 
-let state = Logic.cleanState(readJSON(STATE_KEY, null));
-let inbox = Logic.cleanInbox(readJSON(INBOX_KEY, null));
+let state = Logic.cleanState(PREVIEW ? null : readJSON(STATE_KEY, null));
+let inbox = Logic.cleanInbox(PREVIEW ? null : readJSON(INBOX_KEY, null));
 let profile = { name: "", coach: "にいに", theme: "lavender", seenAt: 0, carryDismissed: "", ...readJSON(PROFILE_KEY, {}) };
-const key = takeKeyFromUrl(KEY_KEY);
+const key = PREVIEW ? readKey("naritai.owner.key") : takeKeyFromUrl(KEY_KEY);
+function readKey(k) { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } }
 let tab = "home";
 let day = Logic.today();
 let calMonth = Logic.monthKey(day);
@@ -33,7 +36,7 @@ function save() {
 }
 
 async function push() {
-  if (!key || !synced) return;
+  if (PREVIEW || !key || !synced) return;
   try {
     await api("PUT", "/api/student", key, state);
     lastSync = Date.now();
@@ -48,8 +51,9 @@ async function push() {
 async function pull(preferServer = false) {
   if (!key) return;
   try {
-    const data = await api("GET", "/api/student", key);
+    const data = await api("GET", PREVIEW ? "/api/owner" : "/api/student", key);
     const server = Logic.cleanState(data.state);
+    if (PREVIEW && !synced) state = server;
     const localEmpty = state.tasks.length === 0 && state.logins.length <= 1 && state.goals.length === 0;
     const serverHas = server.tasks.length > 0 || server.logins.length > 0;
     if (serverHas && (localEmpty || (preferServer && server.updatedAt > state.updatedAt))) {
@@ -112,6 +116,7 @@ function toggleTask(t, rowEl) {
   if (!Logic.canEditDay(t.date, day)) { toast("この日はもう変えられないよ"); return; }
   const listOf = () => Logic.tasksOn(state, inbox, t.date);
   const before = Logic.stats(listOf());
+  const beforePt = Logic.dayPt(listOf(), t.date, inbox);
   const wasComplete = Logic.isComplete(before);
   if (t.from === "owner") {
     const ownerDone = { ...state.ownerDone };
@@ -122,11 +127,15 @@ function toggleTask(t, rowEl) {
   }
   save();
   const after = Logic.stats(listOf());
-  const gained = Logic.taskPt(after) - Logic.taskPt(before);
+  const gained = Logic.dayPt(listOf(), t.date, inbox) - beforePt;
+  const nowDone = after.done > before.done;
   render();
   if (gained > 0) {
     animate(document.querySelector(".mascot svg"), "hop");
     coinFly(rowEl, `+${gained}pt`);
+  } else if (nowDone && Logic.awardMode(t.date)) {
+    animate(document.querySelector(".mascot svg"), "hop");
+    coinFly(rowEl, `${coach()}に届いたよ`);
   }
   // 今日コンプリートのお祝いとスクラッチは、その日のうちだけ。
   if (t.date === day && !wasComplete && Logic.isComplete(after)) setTimeout(() => complete(), 350);
@@ -299,6 +308,111 @@ function openAdd(defaultTarget = "today", presetDate = day) {
   });
 }
 
+// ---- 長押しで編集 ----
+// 0.5秒おしたままで onLong。指が動いたら（スワイプ・スクロール）取り消す。長押しのあとの click は止める。
+function longPress(el, onLong) {
+  let timer = null;
+  let x0 = 0;
+  let y0 = 0;
+  let fired = false;
+  const stop = () => { clearTimeout(timer); timer = null; };
+  el.addEventListener("pointerdown", (e) => {
+    fired = false; x0 = e.clientX; y0 = e.clientY; stop();
+    timer = setTimeout(() => { timer = null; fired = true; try { navigator.vibrate && navigator.vibrate(15); } catch {} onLong(); }, 500);
+  });
+  el.addEventListener("pointermove", (e) => { if (timer && Math.hypot(e.clientX - x0, e.clientY - y0) > 8) stop(); });
+  el.addEventListener("pointerup", stop);
+  el.addEventListener("pointercancel", stop);
+  el.addEventListener("pointerleave", stop);
+  el.addEventListener("contextmenu", (e) => e.preventDefault());
+  el.addEventListener("click", (e) => { if (fired) { fired = false; e.stopImmediatePropagation(); e.preventDefault(); } }, true);
+}
+
+// タスクの編集シート。名前・日付・むずかしさ・分野。いつものなら元も変えられる。
+function openEditTask(t) {
+  if (t.from === "owner") { toast(`${coach()}からのタスクは、${coach()}のスマホで変えてね`); return; }
+  const raw = state.tasks.find((x) => x.id === t.id);
+  if (!raw) return;
+  if (!Logic.canEditDay(raw.date, day)) { toast("この日はもう変えられないよ"); return; }
+  let date = raw.date;
+  let level = raw.level || "normal";
+  let area = raw.area || "";
+  openSheet((close) => {
+    const input = h("input", { class: "text", id: "edit-input", type: "text", maxlength: R().MAX_TITLE, value: raw.title, enterkeyhint: "done", "aria-label": "やること" });
+    const dateBox = h("div", {});
+    const picker7 = h("input", { type: "date", class: "text date-input", id: "edit-date", min: Logic.addDays(day, -R().BACK_DAYS), max: day, value: date, "aria-label": "日付をえらぶ" });
+    picker7.addEventListener("change", () => { if (picker7.value && Logic.canEditDay(picker7.value, day)) { date = picker7.value; drawDate(); } });
+    const drawDate = () => {
+      const quick = [[day, "今日"], [Logic.addDays(day, -1), "昨日"], [Logic.addDays(day, -2), "おととい"]];
+      dateBox.replaceChildren(
+        h("div", { class: "chips" }, quick.map(([d, l]) => h("button", { class: `chip${date === d ? " active" : ""}`, "data-date": d, onclick: () => { date = d; drawDate(); } }, l)), picker7),
+        h("p", { class: "sub" }, Logic.dateLabel(date) + (raw.routine && date !== raw.date ? "（日付を変えると「いつもの」から外れるよ）" : "")));
+    };
+    drawDate();
+    const levelSeg = h("div", { class: "seg level-seg" });
+    const drawLevel = () => levelSeg.replaceChildren(...R().LEVELS.map((l) => h("button", {
+      class: `seg-btn${level === l.key ? " active" : ""}`, "data-level": l.key, onclick: () => { level = l.key; drawLevel(); },
+    }, `${l.stars} ${l.label}`)));
+    drawLevel();
+    // にいにが★で決めたむずかしさは、生徒の側では変えない。
+    const levelBox = t.fixedBy
+      ? h("p", { class: "sub" }, `むずかしさ：${Logic.levelInfo(t.level).stars} ${Logic.levelInfo(t.level).label}（${coach()}が決めたので変えられないよ）`)
+      : h("div", {}, h("p", { class: "sub" }, "むずかしさ"), levelSeg);
+    const picker = areaPicker(state, area, (v) => { area = v; });
+    const routineToo = h("input", { type: "checkbox", id: "edit-routine-too" });
+    const save1 = () => {
+      const changes = { title: input.value, date, area, ...(t.fixedBy ? {} : { level }), routineToo: routineToo.checked };
+      const r = Logic.editTask(state, raw.id, changes, day);
+      if (r.error) { toast(r.error); return; }
+      state = r.state;
+      save();
+      close();
+      render();
+      toast("変えたよ");
+    };
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) save1(); });
+    return [
+      h("h2", {}, "タスクを編集"),
+      input,
+      h("p", { class: "sub" }, "いつ？"), dateBox,
+      levelBox,
+      state.areas.length ? h("div", {}, h("p", { class: "sub" }, "なりたい自分の分野"), picker.el) : null,
+      raw.routine ? h("label", { class: "toggle-row" }, h("span", {}, "明日からの「いつもの」も同じに変える"), routineToo) : null,
+      h("button", { class: "btn primary", id: "edit-submit", onclick: save1 }, "保存する"),
+      h("button", { class: "btn ghost danger", id: "edit-delete", onclick: () => { close(); removeItem("task", raw.id); } }, "このタスクをけす"),
+    ];
+  });
+}
+
+// 目標の編集シート。名前と分野。
+function openEditGoal(g) {
+  if (g.from === "owner") { toast(`${coach()}からの目標は、${coach()}のスマホで変えてね`); return; }
+  const raw = state.goals.find((x) => x.id === g.id);
+  if (!raw) return;
+  let area = raw.area || "";
+  openSheet((close) => {
+    const input = h("input", { class: "text", id: "edit-input", type: "text", maxlength: R().MAX_TITLE, value: raw.title, enterkeyhint: "done", "aria-label": "目標" });
+    const picker = areaPicker(state, area, (v) => { area = v; });
+    const save1 = () => {
+      const r = Logic.editGoal(state, raw.id, { title: input.value, area });
+      if (r.error) { toast(r.error); return; }
+      state = r.state;
+      save();
+      close();
+      render();
+      toast("変えたよ");
+    };
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) save1(); });
+    return [
+      h("h2", {}, raw.kind === "week" ? "今週の目標を編集" : "今月の目標を編集"),
+      input,
+      state.areas.length ? h("div", {}, h("p", { class: "sub" }, "なりたい自分の分野"), picker.el) : null,
+      h("button", { class: "btn primary", id: "edit-submit", onclick: save1 }, "保存する"),
+      h("button", { class: "btn ghost danger", id: "edit-delete", onclick: () => { close(); removeItem("goal", raw.id); } }, "この目標をけす"),
+    ];
+  });
+}
+
 // ---- スワイプで削除 ----
 function swipeRow(row, onDelete) {
   const wrap = h("div", { class: "task-wrap" }, h("button", { class: "task-del", onclick: onDelete, tabindex: "-1" }, "けす"), row);
@@ -326,6 +440,13 @@ function swipeRow(row, onDelete) {
   return wrap;
 }
 
+// にいにがptを入れる日は「査定まち」→「+300pt」。前の日は自動の計算。
+function ptLabel(t, s) {
+  if (!Logic.awardMode(t.date)) return h("span", { class: "pt" }, t.done ? "" : `+${Logic.perTaskPt(s, t.w)}pt`);
+  if (!t.done) return h("span", { class: "pt" }, "");
+  return t.award !== undefined ? h("span", { class: "pt got" }, `+${fmt(t.award)}pt`) : h("span", { class: "pt waiting" }, "査定まち");
+}
+
 function taskRow(t, s) {
   const lv = Logic.levelInfo(t.level);
   const row = h("button", { class: `task${t.done ? " done" : ""}`, "data-id": t.id, "aria-pressed": t.done ? "true" : "false" },
@@ -335,7 +456,8 @@ function taskRow(t, s) {
     t.from === "routine" ? h("span", { class: "tag" }, "いつもの") : null,
     t.from === "owner" ? h("span", { class: "tag" }, `${coach()}から`) : null,
     t.area ? areaTag(state, t.area) : null,
-    h("span", { class: "pt" }, t.done ? "" : `+${Logic.perTaskPt(s, t.w)}pt`));
+    ptLabel(t, s));
+  longPress(row, () => openEditTask(t));
   row.addEventListener("click", () => toggleTask(t, row));
   // にいにからのタスクは消せない（にいにの画面で消す）。
   return t.from === "owner" ? h("div", { class: "task-wrap" }, row) : swipeRow(row, () => removeItem("task", t.id));
@@ -356,6 +478,30 @@ function topbar() {
     h("div", { class: "title" }, `${profile.name ? `${profile.name}の` : ""}なりたい自分へ`),
     h("div", { class: "streak", "aria-label": `${st.days}日連続` }, `🔥${st.days}日`),
     h("button", { class: "icon-btn", id: "open-settings", "aria-label": "設定", onclick: openSettings }, icon("gear")));
+}
+
+// にいにの最新のひとこと（ホームのいちばん上）。
+function heroComment(c, isNew) {
+  const el = commentCard(c, coach(), isNew, () => { profile.seenAt = Math.max(profile.seenAt, ...inbox.comments.map((x) => x.at)); saveProfile(); render(); });
+  el.classList.add("hero-comment");
+  return el;
+}
+
+// 今日のごほうびまで：スクラッチ・査定まち・交換まで。
+function rewardCard(s, allDone, sm) {
+  const rows = [];
+  if (s.total < R().MIN_TASKS) rows.push(["🎫", `あと${R().MIN_TASKS - s.total}個入れて全部終えると、ボーナススクラッチ！`, s.total / R().MIN_TASKS]);
+  else if (!allDone) rows.push(["🎫", `あと${s.total - s.done}個で今日コンプリート → スクラッチ！`, s.done / s.total]);
+  else rows.push(["🎉", state.scratches[day] ? "今日のスクラッチ ゲット済み！" : "コンプリート！スクラッチを削ろう", 1]);
+  const wait = Logic.waiting(todayTasks(), day);
+  if (wait) rows.push(["⏳", `${coach()}の査定まち ${wait}個（ptが入ると通帳に入るよ）`, null]);
+  const step = R().EXCHANGE_STEP;
+  const bal = Math.max(0, sm.balance);
+  const next = (Math.floor(bal / step) + 1) * step;
+  rows.push(["🎁", bal >= step ? `${coach()}と交換できるよ！（次の ${fmt(next)}pt まで あと ${fmt(next - bal)}pt）` : `${coach()}と交換まで あと ${fmt(step - bal)}pt`, (bal % step) / step]);
+  return h("section", { class: "card reward-card", id: "reward" }, h("strong", {}, "今日のごほうびまで"),
+    rows.map(([ic, txt, p]) => h("div", { class: "reward-row" }, h("span", { class: "reward-ic" }, ic),
+      h("div", { class: "reward-main" }, h("span", {}, txt), p === null ? null : h("div", { class: "bar" }, h("div", { class: "bar-fill", style: { width: `${Math.round(Math.min(1, p) * 100)}%` } }))))));
 }
 
 function renderHome() {
@@ -384,10 +530,9 @@ function renderHome() {
         h("div", { class: "progress-fill", style: { width: `${Math.round(s.rate * 100)}%` } })),
       h("div", { class: "rate", id: "rate" }, `${Math.round(s.rate * 100)}%`)),
   ];
-  if (latest) {
-    const isNew = latest.at > profile.seenAt;
-    els.push(commentCard(latest, coach(), isNew, () => { profile.seenAt = Math.max(profile.seenAt, ...inbox.comments.map((c) => c.at)); saveProfile(); render(); }));
-  }
+  // にいにの最新のひとことは、いちばん上に大きく。その下（貯金の下）に、今日のごほうびまで。
+  if (latest) els.splice(1, 0, heroComment(latest, latest.at > profile.seenAt));
+  els.splice(latest ? 4 : 3, 0, rewardCard(s, allDone, sm));
   if (left.length && profile.carryDismissed !== day) {
     els.push(h("button", { class: "banner", id: "carry", onclick: () => { state = Logic.carryOver(state, day); save(); render(); toast("今日にうつしたよ"); } },
       h("span", {}, "📦"), h("span", {}, `昨日の残り${left.length}個を今日にうつす`),
@@ -419,6 +564,7 @@ function goalCard(g, kind) {
     h("span", { class: "goal-title" }, g.title),
     g.from === "owner" ? h("span", { class: "tag" }, `${coach()}から`) : null,
     g.area ? areaTag(state, g.area) : null);
+  longPress(card, () => openEditGoal(g));
   card.addEventListener("click", () => toggleGoal(g));
   return g.from === "owner" ? h("div", { class: "task-wrap" }, card) : swipeRow(card, () => removeItem("goal", g.id));
 }
@@ -463,12 +609,35 @@ function renderCalendar() {
 }
 
 // ---- なりたい自分（振り返りシート）----
+// 毎日の日記（友達との会話の振り返り など）。今日・昨日を選べる。
+let diaryDate = "";
+function diaryCard() {
+  const date = diaryDate && Logic.canEditDay(diaryDate, day) ? diaryDate : day;
+  const e = state.diary[date] || {};
+  const boxes = R().DIARY_ITEMS.map((it) => ({ it, el: h("textarea", { class: "text diary-text", id: `diary-${it.key}`, maxlength: R().MAX_DIARY_TEXT, rows: 4, placeholder: it.hint, "aria-label": it.label, value: e[it.key] || "" }) }));
+  const saveDiary = () => {
+    const r = Logic.setDiary(state, date, Object.fromEntries(boxes.map((b) => [b.it.key, b.el.value])), day);
+    if (r.error) { toast(r.error); return; }
+    state = r.state;
+    save();
+    render();
+    toast("日記を保存したよ");
+  };
+  return h("section", { class: "card diary", id: "diary" },
+    h("div", { class: "row-between" }, h("strong", {}, "📔 毎日の日記"),
+      h("div", { class: "chips" }, [[day, "今日"], [Logic.addDays(day, -1), "昨日"]].map(([d, l]) => h("button", { class: `chip${date === d ? " active" : ""}`, "data-date": d, onclick: () => { diaryDate = d; render(); } }, l)))),
+    h("p", { class: "sub" }, `${Logic.dateLabel(date)} の日記。${coach()}も読めるよ`),
+    boxes.map((b) => h("label", { class: "diary-item" }, h("span", { class: "diary-label" }, b.it.label), b.el)),
+    h("button", { class: "btn primary", id: "diary-save", onclick: saveDiary }, e.at ? "書き直して保存" : "保存する"));
+}
+
 function renderSelf() {
-  if (state.areas.length < R().MIN_AREAS) return [topbar(), areasSetup()];
+  if (state.areas.length < R().MIN_AREAS) return [topbar(), diaryCard(), areasSetup()];
   const r = Logic.radar(state, day);
   const done = Logic.reflectionOf(state, Logic.weekKey(day));
   return [
     topbar(),
+    diaryCard(),
     h("section", { class: "card self-radar" },
       h("div", { class: "row-between" }, h("strong", {}, "なりたい自分"), h("button", { class: "btn small ghost", id: "edit-areas", onclick: openAreas }, "分野を変える")),
       radarChart(r),
@@ -605,7 +774,7 @@ function editableDay(date) {
   const s = Logic.stats(tasks);
   const comments = inbox.comments.filter((c) => c.date === date);
   return h("div", { class: "day-detail card", id: "day-edit" },
-    h("div", { class: "row-between" }, h("strong", {}, Logic.dateLabel(date)), h("span", {}, s.total ? `${s.done}/${s.total}  ${Math.round(s.rate * 100)}%  +${fmt(Logic.taskPt(s))}pt` : "")),
+    h("div", { class: "row-between" }, h("strong", {}, Logic.dateLabel(date)), h("span", {}, s.total ? `${s.done}/${s.total}  ${Math.round(s.rate * 100)}%  +${fmt(Logic.dayPt(tasks, date, inbox))}pt` : "")),
     tasks.length ? h("div", { class: "task-list" }, tasks.map((t) => taskRow(t, s))) : h("p", { class: "empty" }, "この日のタスクはまだないよ"),
     h("button", { class: "btn", id: "add-to-day", onclick: () => openAdd("today", date) }, date === day ? "＋ 今日に足す" : "＋ この日に足す"),
     comments.map((c) => commentCard(c, coach(), false)));
@@ -686,12 +855,13 @@ function tabsBar() {
 function render() {
   const stg = currentStage();
   setTheme(stg.index, profile.theme);
-  if (!profile.name) {
+  if (!profile.name && !PREVIEW) {
     app.replaceChildren(onboarding());
     return;
   }
   const screens = { home: renderHome, goals: renderGoals, self: renderSelf, calendar: renderCalendar, points: renderPoints };
-  app.replaceChildren(h("div", { class: "screen" }, screens[tab]()), tabsBar());
+  const bar = PREVIEW ? h("div", { class: "preview-bar", id: "preview-bar" }, h("span", {}, "見るだけモード：さわっても保存されません"), h("a", { href: "owner.html" }, "にいにの画面へ")) : null;
+  app.replaceChildren(...[bar, h("div", { class: "screen" }, screens[tab]()), tabsBar()].filter(Boolean));
 }
 
 // ---- 最初の案内 ----

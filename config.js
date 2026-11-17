@@ -67,6 +67,23 @@ const RULES = {
   // 保存の上限（スマホの容量を食いすぎないように）。
   MAX_TITLE: 60,
   MAX_COMMENT: 300,
+  // 罰（にいにが引く）。100pt ずつ、1回で最大5,000pt。
+  // にいにが1個ずつptを入れる形にした日（これより前の日は自動の計算のまま）。
+  AWARD_FROM: "2026-11-17",
+  AWARD_DAY_PT: 2000, // 1日に配れるpt（ふだん）
+  MAX_DAY_BUDGET: 5000, // その日だけ増やせる上限
+  BUDGET_STEP: 500,
+  MAX_AWARDS: 6000,
+  // 毎日の日記。項目はここで足せる。
+  DIARY_ITEMS: [
+    { key: "friends", label: "友達との会話の振り返り", hint: "だれと・どんな話をした？・どう思った？" },
+  ],
+  MAX_DIARY_TEXT: 400,
+  MAX_DIARY_DAYS: 400,
+  PENALTY_STEP: 100,
+  MAX_PENALTY: 5000,
+  MAX_PENALTIES: 300,
+  MAX_REASON: 100,
   MAX_TASKS: 8000,
   MAX_TASKS_PER_DAY: 40,
   MAX_GOALS: 600,
