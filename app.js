@@ -712,19 +712,10 @@ function openSettings() {
           save(); close(); render(); toast("いつものから外したよ");
         } }, "外す"))) : h("p", { class: "empty" }, "なし（＋で追加するとき「いつもの」にできるよ）"),
       h("p", { class: "sub" }, `サーバー：${status}`),
-      h("button", { class: "btn ghost", onclick: exportFile }, "データをファイルに書き出す"),
     ];
   });
 }
 
-function exportFile() {
-  const blob = new Blob([JSON.stringify(state)], { type: "application/json" });
-  const a = h("a", { href: URL.createObjectURL(blob), download: `naritai-${day}.json` });
-  document.body.append(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-}
 
 // ---- 起動 ----
 // 日付が変わったとき・画面に戻ったときに、データとにいにの分を読み直す。
